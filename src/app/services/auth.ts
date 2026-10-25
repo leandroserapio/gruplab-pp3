@@ -6,6 +6,15 @@ export class AuthService {
   private _userId: string | null = null;
   private _email: string | null = null;
 
+  async isAuthenticated(): Promise<boolean> {
+    try {
+      await getCurrentUser();
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   async loadUser() {
     try {
       const user = await getCurrentUser();
@@ -35,5 +44,7 @@ export class AuthService {
 
   async logout() {
     await signOut();
+    this._userId = null;
+    this._email = null;
   }
 }
