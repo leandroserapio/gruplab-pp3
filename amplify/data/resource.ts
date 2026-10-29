@@ -6,7 +6,8 @@ const schema = a.schema({
       email: a.string().required(),
       nombre: a.string().required(),
     })
-    .authorization((allow) => [allow.owner()]),
+    // Owners edit their own profile; any signed-in user can read names.
+    .authorization((allow) => [allow.owner(), allow.authenticated().to(['read'])]),
 
   Materia: a
     .model({

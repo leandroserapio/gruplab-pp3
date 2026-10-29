@@ -51,3 +51,6 @@ Thumbs.db
 amplify_outputs*
 amplifyconfiguration*
 
+
+# Unit tests are kept local only
+*.spec.ts
