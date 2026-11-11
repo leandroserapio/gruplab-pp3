@@ -311,11 +311,11 @@ export class GrupoDetalle implements OnInit {
     this.ordenar(this.todasLasCards().filter((c) => c.estado === 'hecho'))
   );
 
-  // Admin del grupo
+  // Admin del grupo (el creador del grupo o cualquier docente del aula)
   esAdminDelGrupo = computed(() => {
     const g = this.grupo();
     const uid = this.userId();
-    return !!g && !!uid && g.adminId === uid;
+    return (!!g && !!uid && g.adminId === uid) || this.esDocente();
   });
   puedeRevisar = (card: Card): boolean => {
     const usuarioId = this.userId();
@@ -335,6 +335,7 @@ export class GrupoDetalle implements OnInit {
   mostrarModalCard = signal(false);
   modoEdicionCard = signal(false);
   cardEditandoId = signal<string | null>(null);
+  guardandoCard = signal(false);
   cardPlanificacionBloqueada = false;
   cardTitulo = '';
   cardDescripcion = '';
@@ -349,11 +350,24 @@ export class GrupoDetalle implements OnInit {
   puntuacionComunicacion = 5;
   puntuacionResponsabilidad = 5;
 
-  // Modal puntuar (profesor)
+  // Modal seguimiento de tarea (profesor)
+  readonly opcionesSeguimiento = [
+    'A trabajar',
+    'En buen camino',
+    'Incompleto',
+    'Bien hecho',
+  ] as const;
   mostrarModalPuntuar = signal(false);
   cardAPuntuar = signal<Card | null>(null);
+  seguimientoInput = '';
   puntuacionInput = 0;
   comentarioInput = '';
+
+  // Modal calificar grupo e integrantes (banner de nota final y nota por integrante)
+  mostrarModalCalificarGrupo = signal(false);
+  notaFinalGrupoInput: number | null = 8;
+  comentarioGrupoInput = '';
+  notasIntegrantesInput = signal<Record<string, number>>({});
 
   // Modal editar nombre del grupo
   mostrarModalNombre = signal(false);
@@ -362,11 +376,53 @@ export class GrupoDetalle implements OnInit {
   // Modal gestionar integrantes
   mostrarModalIntegrantes = signal(false);
   alumnosAgregables = signal<string[]>([]);
+  alumnosDisponiblesParaAgregar = signal<string[]>([]);
   integrantesSeleccionados = signal<string[]>([]);
 
   // Confirmaciones
   mostrarConfirmarSalir = signal(false);
   mostrarConfirmarEliminarGrupo = signal(false);
+  confirmacionPendiente = signal<{
+    titulo: string;
+    mensaje: string;
+    textoBoton: string;
+    ejecutar: () => Promise<void>;
+  } | null>(null);
+
+  solicitarConfirmacion(
+    titulo: string,
+    mensaje: string,
+    textoBoton: string,
+    ejecutar: () => Promise<void>,
+  ) {
+    this.confirmacionPendiente.set({ titulo, mensaje, textoBoton, ejecutar });
+  }
+
+  cerrarConfirmacionPendiente() {
+    this.confirmacionPendiente.set(null);
+  }
+
+  async confirmarAccionPendiente() {
+    const actual = this.confirmacionPendiente();
+    if (!actual) return;
+    this.confirmacionPendiente.set(null);
+    await actual.ejecutar();
+  }
+
+  // Adjuntos & Detalle de card
+  adjuntosUrls = signal<Record<string, string>>({});
+  subiendoAdjuntoCardId = signal<string | null>(null);
+  cardDetalle = signal<Card | null>(null);
+  cargandoUrlsDetalle = signal(false);
+
+  // Perfiles de usuario & Historial de actividad
+  usuariosMap = signal<Record<string, string>>({
+    'b34c1aaa-5011-704e-e9bf-e6f62c2ee306': 'luciano.barbosa30@gmail.com',
+    'b3dc0ada-20e1-70bf-133e-5ce5f6c2d36c': 'luciano_l17@hotmail.com',
+    'd3bcaaea-8091-7090-e940-37cf06abf4c1': 'leandroserapio95@gmail.com',
+    '34181498-4001-7030-bfe0-92e87e7858b3': 'luciano_l17@hotmail.com',
+  });
+  mostrarModalLogs = signal(false);
 
   constructor(
     private route: ActivatedRoute,
@@ -383,16 +439,35 @@ export class GrupoDetalle implements OnInit {
       const userId = await this.auth.getUserId();
       this.userId.set(userId);
 
+      this.auth.getEmail?.().then((email) => {
+        if (email) {
+          this.usuariosMap.update((m) => ({ ...m, [userId]: email }));
+          this.materiaService.sincronizarPerfilUsuario?.(userId, email);
+        }
+      }).catch(() => {});
+
       const grupo = await this.materiaService.obtenerGrupo(grupoId);
       if (!grupo) throw new Error('Grupo no encontrado');
       this.grupo.set(grupo);
 
-      // Determinar rol
+      if (this.materiaService.obtenerMapaUsuarios) {
+        const mapa = await this.materiaService.obtenerMapaUsuarios();
+        this.usuariosMap.update((actual) => ({ ...actual, ...mapa }));
+      }
+
+      // Determinar rol y validar acceso
       if (grupo.materiaId) {
         const materia = await this.materiaService.obtenerMateria(grupo.materiaId);
         if (!materia) throw new Error('Materia no encontrada');
         const rol = this.materiaService.obtenerRol(materia, userId);
-        this.esDocente.set(rol === 'admin' || rol === 'profesor');
+        const docente = rol === 'admin' || rol === 'profesor';
+        this.esDocente.set(docente);
+
+        const perteneceAlGrupo = (grupo.integrantes ?? []).includes(userId);
+        if (!docente && !perteneceAlGrupo) {
+          this.router.navigate(['/aula', grupo.materiaId]);
+          return;
+        }
       } else {
         this.esDocente.set(false);
       }
@@ -411,11 +486,39 @@ export class GrupoDetalle implements OnInit {
     return [...cards].sort((a, b) => (a.orden ?? 0) - (b.orden ?? 0));
   }
 
+  private async cargarUrlsAdjuntos(cards: Card[]) {
+    const todasLasKeys = new Set<string>();
+    for (const card of cards) {
+      for (const key of card.adjuntos ?? []) {
+        if (key) todasLasKeys.add(key);
+      }
+    }
+    const urlsActuales = { ...this.adjuntosUrls() };
+    let cambios = false;
+    await Promise.all(
+      Array.from(todasLasKeys).map(async (key) => {
+        if (!urlsActuales[key]) {
+          try {
+            const url = await this.materiaService.obtenerUrlAdjunto(key);
+            urlsActuales[key] = url;
+            cambios = true;
+          } catch (e) {
+            console.warn('No se pudo precargar URL para', key, e);
+          }
+        }
+      }),
+    );
+    if (cambios) {
+      this.adjuntosUrls.set(urlsActuales);
+    }
+  }
+
   private async recargarCards() {
     const g = this.grupo();
     if (!g) return;
     const cards = await this.materiaService.listarCardsDeGrupo(g.id);
     this.todasLasCards.set(cards);
+    await this.cargarUrlsAdjuntos(cards);
   }
 
   private async recargarLogs() {
@@ -681,7 +784,15 @@ export class GrupoDetalle implements OnInit {
     this.cardDescripcion = '';
     this.cardPesoEsfuerzo = 1;
     this.cardFechaLimite = '';
-    this.asignadosSeleccionados.set(this.userId() ? [this.userId()!] : []);
+    const uid = this.userId();
+    const miembros = this.integrantesGrupo();
+    this.asignadosSeleccionados.set(
+      uid && miembros.includes(uid)
+        ? [uid]
+        : miembros.length === 1
+          ? [miembros[0]]
+          : [],
+    );
     this.mostrarModalCard.set(true);
   }
 
@@ -716,6 +827,7 @@ export class GrupoDetalle implements OnInit {
 
   cerrarModalCard() {
     this.mostrarModalCard.set(false);
+    this.guardandoCard.set(false);
     this.cardTitulo = '';
     this.cardDescripcion = '';
     this.cardEditandoId.set(null);
@@ -725,78 +837,97 @@ export class GrupoDetalle implements OnInit {
 
   async guardarCard() {
     const g = this.grupo();
-    if (!g || !this.cardTitulo.trim()) return;
-    if (!this.asignadosSeleccionados().length) {
-      this.error.set('Asigná la tarea a por lo menos un integrante.');
+    if (!g || this.guardandoCard()) return;
+    const titulo = this.cardTitulo.trim();
+    if (!titulo) {
+      this.error.set('Ingresá un título para la tarea.');
       return;
     }
 
+    const peso = ([1, 3, 5].includes(Number(this.cardPesoEsfuerzo))
+      ? Number(this.cardPesoEsfuerzo)
+      : 1) as 1 | 3 | 5;
+    const descripcion = this.cardDescripcion.trim();
+
+    this.error.set(null);
+    this.guardandoCard.set(true);
     try {
       if (this.modoEdicionCard() && this.cardEditandoId()) {
         await this.materiaService.actualizarCard(this.cardEditandoId()!, {
-          titulo: this.cardTitulo.trim(),
-          descripcion: this.cardDescripcion.trim(),
+          titulo,
+          descripcion,
           ...(!this.cardPlanificacionBloqueada
             ? {
-                pesoEsfuerzo: this.cardPesoEsfuerzo,
+                pesoEsfuerzo: peso,
                 asignados: this.asignadosSeleccionados(),
-                fechaLimite: this.cardFechaLimite || null,
               }
             : {}),
+          ...(this.esDocente()
+            ? { fechaLimite: this.cardFechaLimite || null }
+            : {}),
         });
-        await this.materiaService.registrarLog(
-          g.id,
-          this.userId()!,
-          'editar_card',
-          'Card',
-          this.cardEditandoId()!
-        );
+        try {
+          await this.materiaService.registrarLog(
+            g.id,
+            this.userId()!,
+            'editar_card',
+            'Card',
+            this.cardEditandoId()!
+          );
+        } catch {}
       } else {
-        const nueva = await this.materiaService.crearCard(g.id, this.cardTitulo.trim(), {
-          pesoEsfuerzo: this.cardPesoEsfuerzo,
+        const nueva = await this.materiaService.crearCard(g.id, titulo, {
+          ...(descripcion ? { descripcion } : {}),
+          pesoEsfuerzo: peso,
           asignados: this.asignadosSeleccionados(),
-          ...(this.cardFechaLimite ? { fechaLimite: this.cardFechaLimite } : {}),
+          ...(this.esDocente() && this.cardFechaLimite
+            ? { fechaLimite: this.cardFechaLimite }
+            : {}),
         });
-        if (this.cardDescripcion.trim()) {
-          await this.materiaService.actualizarCard(nueva.id, {
-            descripcion: this.cardDescripcion.trim(),
-          });
-        }
-        await this.materiaService.registrarLog(
-          g.id,
-          this.userId()!,
-          'crear_backlog',
-          'Card',
-          nueva.id
-        );
+        try {
+          await this.materiaService.registrarLog(
+            g.id,
+            this.userId()!,
+            'crear_backlog',
+            'Card',
+            nueva.id
+          );
+        } catch {}
       }
       await this.recargarCards();
       await this.recargarLogs();
       this.cerrarModalCard();
     } catch (e: any) {
       this.error.set(e.message ?? 'Error al guardar la card');
+    } finally {
+      this.guardandoCard.set(false);
     }
   }
 
-  async eliminarCard(card: Card) {
+  eliminarCard(card: Card) {
     const g = this.grupo();
     if (!g) return;
-    if (!confirm(`¿Eliminar la card "${card.titulo}"?`)) return;
-
-    try {
-      await this.materiaService.eliminarCard(card.id);
-      await this.materiaService.registrarLog(
-        g.id,
-        this.userId()!,
-        'eliminar_card',
-        'Card',
-        card.id
-      );
-      await this.recargarCards();
-      await this.recargarLogs();
-    } catch (e: any) {
-      this.error.set(e.message ?? 'Error al eliminar la card');
-    }
+    this.solicitarConfirmacion(
+      'Eliminar tarea',
+      `¿Seguro que querés eliminar la tarea "${card.titulo}"? Esta acción no se puede deshacer.`,
+      'Eliminar tarea',
+      async () => {
+        try {
+          await this.materiaService.eliminarCard(card.id);
+          await this.materiaService.registrarLog(
+            g.id,
+            this.userId()!,
+            'eliminar_card',
+            'Card',
+            card.id
+          );
+          await this.recargarCards();
+          await this.recargarLogs();
+        } catch (e: any) {
+          this.error.set(e.message ?? 'Error al eliminar la card');
+        }
+      },
+    );
   }
 
   async subirArchivo(card: Card, event: Event) {
@@ -804,6 +935,8 @@ export class GrupoDetalle implements OnInit {
     const file = input.files?.[0];
     if (!file) return;
 
+    this.subiendoAdjuntoCardId.set(card.id);
+    this.error.set(null);
     try {
       const key = await this.materiaService.subirAdjunto(card.id, file);
       await this.materiaService.registrarLog(
@@ -814,11 +947,18 @@ export class GrupoDetalle implements OnInit {
         card.id,
       );
       await this.recargarCards();
-      this.error.set(null);
-      input.value = '';
-      await this.abrirAdjunto(key);
+      if (this.cardDetalle()?.id === card.id) {
+        const refreshed = this.todasLasCards().find((c) => c.id === card.id);
+        if (refreshed) this.cardDetalle.set(refreshed);
+      }
+      try {
+        const url = await this.materiaService.obtenerUrlAdjunto(key);
+        this.adjuntosUrls.update((urls) => ({ ...urls, [key]: url }));
+      } catch {}
     } catch (e: any) {
       this.error.set(e.message ?? 'No se pudo adjuntar el archivo');
+    } finally {
+      this.subiendoAdjuntoCardId.set(null);
       input.value = '';
     }
   }
@@ -827,32 +967,146 @@ export class GrupoDetalle implements OnInit {
     input?.click();
   }
 
+  esImagen(key: string): boolean {
+    if (!key) return false;
+    const ext = key.split('.').pop()?.toLowerCase();
+    return ['png', 'jpg', 'jpeg', 'webp', 'gif', 'svg', 'bmp'].includes(ext ?? '');
+  }
+
+  esPdf(key: string): boolean {
+    if (!key) return false;
+    return key.toLowerCase().endsWith('.pdf');
+  }
+
+  nombreAdjunto(key: string): string {
+    if (!key) return 'archivo';
+    const base = key.split('/').pop() || 'archivo';
+    return base.replace(/^\d+-/, '');
+  }
+
+  iconoAdjunto(key: string): string {
+    if (this.esImagen(key)) return '🖼️';
+    if (this.esPdf(key)) return '📕';
+    const ext = key.split('.').pop()?.toLowerCase();
+    if (['zip', 'rar', '7z', 'tar', 'gz'].includes(ext ?? '')) return '📦';
+    if (['doc', 'docx', 'txt', 'md', 'rtf'].includes(ext ?? '')) return '📝';
+    if (['xls', 'xlsx', 'csv'].includes(ext ?? '')) return '📊';
+    return '📎';
+  }
+
+  primerImagenAdjunta(card: Card): string | null {
+    const adjuntos = card.adjuntos ?? [];
+    for (const key of adjuntos) {
+      if (key && this.esImagen(key) && this.adjuntosUrls()[key]) {
+        return key;
+      }
+    }
+    return null;
+  }
+
+  async abrirDetalleCard(card: Card) {
+    this.cardDetalle.set(card);
+    if (card.adjuntos?.length) {
+      this.cargandoUrlsDetalle.set(true);
+      try {
+        await this.cargarUrlsAdjuntos([card]);
+      } finally {
+        this.cargandoUrlsDetalle.set(false);
+      }
+    }
+  }
+
+  cerrarDetalleCard() {
+    this.cardDetalle.set(null);
+  }
+
+  estadoLabel(estado: string | null | undefined): string {
+    const map: Record<string, string> = {
+      backlog: 'Backlog',
+      progreso: 'En progreso',
+      revision: 'Revisión',
+      hecho: 'Hecho',
+    };
+    return estado ? (map[estado] ?? estado) : '';
+  }
+
   async abrirAdjunto(key: string) {
     if (!key) return;
     try {
-      const url = await this.materiaService.obtenerUrlAdjunto(key);
+      let url = this.adjuntosUrls()[key];
+      if (!url) {
+        url = await this.materiaService.obtenerUrlAdjunto(key);
+        this.adjuntosUrls.update((u) => ({ ...u, [key]: url }));
+      }
       window.open(url, '_blank', 'noopener,noreferrer');
     } catch (e: any) {
       this.error.set(e.message ?? 'No se pudo abrir el archivo');
     }
   }
 
-  nombreAdjunto(key: string): string {
-    return (key || '').split('/').pop() || 'archivo';
+  eliminarAdjunto(card: Card, key: string, event?: Event) {
+    event?.stopPropagation();
+    this.solicitarConfirmacion(
+      'Eliminar adjunto',
+      `¿Seguro que querés eliminar el archivo "${this.nombreAdjunto(key)}"?`,
+      'Eliminar archivo',
+      async () => {
+        try {
+          await this.materiaService.eliminarAdjunto(card.id, key);
+          await this.materiaService.registrarLog(
+            card.grupoId,
+            this.userId()!,
+            'eliminar_adjunto',
+            'Card',
+            card.id,
+          );
+          await this.recargarCards();
+          await this.recargarLogs();
+          if (this.cardDetalle()?.id === card.id) {
+            const refreshed = this.todasLasCards().find((c) => c.id === card.id);
+            if (refreshed) this.cardDetalle.set(refreshed);
+          }
+        } catch (e: any) {
+          this.error.set(e.message ?? 'Error al eliminar el adjunto');
+        }
+      },
+    );
   }
 
-  // ==== Puntuar (profesor) ====
+  // ==== Seguimiento de tareas (profesor) & Calificación de grupo ====
+
+  etiquetaSeguimiento(card: Card | null | undefined): string | null {
+    const raw = card?.comentarioProfesor ?? '';
+    const match = raw.match(/^\[(A trabajar|En buen camino|Incompleto|Bien hecho)\]\s*(.*)$/s);
+    return match ? match[1] : null;
+  }
+
+  comentarioLimpio(card: Card | null | undefined): string {
+    const raw = card?.comentarioProfesor ?? '';
+    const match = raw.match(/^\[(A trabajar|En buen camino|Incompleto|Bien hecho)\]\s*(.*)$/s);
+    return match ? match[2].trim() : raw;
+  }
+
+  claseSeguimiento(etiqueta: string | null): string {
+    if (etiqueta === 'A trabajar') return 'seg-trabajar';
+    if (etiqueta === 'En buen camino') return 'seg-buen-camino';
+    if (etiqueta === 'Incompleto') return 'seg-incompleto';
+    if (etiqueta === 'Bien hecho') return 'seg-bien-hecho';
+    return '';
+  }
 
   abrirPuntuar(card: Card) {
     this.cardAPuntuar.set(card);
+    this.seguimientoInput = this.etiquetaSeguimiento(card) ?? 'En buen camino';
     this.puntuacionInput = card.puntuacion ?? 0;
-    this.comentarioInput = card.comentarioProfesor ?? '';
+    this.comentarioInput = this.comentarioLimpio(card);
     this.mostrarModalPuntuar.set(true);
   }
 
   cerrarPuntuar() {
     this.mostrarModalPuntuar.set(false);
     this.cardAPuntuar.set(null);
+    this.seguimientoInput = '';
     this.puntuacionInput = 0;
     this.comentarioInput = '';
   }
@@ -863,9 +1117,12 @@ export class GrupoDetalle implements OnInit {
     if (!card || !g) return;
 
     try {
+      const etiqueta = this.seguimientoInput ? `[${this.seguimientoInput}]` : '';
+      const obs = this.comentarioInput.trim();
+      const comentarioFinal = etiqueta ? (obs ? `${etiqueta} ${obs}` : etiqueta) : obs;
+
       await this.materiaService.actualizarCard(card.id, {
-        puntuacion: this.puntuacionInput,
-        comentarioProfesor: this.comentarioInput.trim(),
+        comentarioProfesor: comentarioFinal,
       });
       await this.materiaService.registrarLog(
         g.id,
@@ -875,9 +1132,89 @@ export class GrupoDetalle implements OnInit {
         card.id
       );
       await this.recargarCards();
+      await this.recargarLogs();
+      if (this.cardDetalle()?.id === card.id) {
+        const refreshed = this.todasLasCards().find((c) => c.id === card.id);
+        if (refreshed) this.cardDetalle.set(refreshed);
+      }
       this.cerrarPuntuar();
     } catch (e: any) {
-      this.error.set(e.message ?? 'Error al guardar la puntuación');
+      this.error.set(e.message ?? 'Error al guardar el estado de seguimiento');
+    }
+  }
+
+  // ==== Calificación Final del Grupo y Nota por Integrante (Banner) ====
+
+  calificacionGrupo = computed<{
+    notaFinal: number | null;
+    comentario: string;
+    notasIntegrantes: Record<string, number>;
+    docenteId: string;
+    timestamp: number;
+  } | null>(() => {
+    const logsCalif = this.logs()
+      .filter((l) => l.entidad === 'CalificacionGrupo' && l.accion === 'calificar_grupo')
+      .sort((a, b) => (b.timestamp ?? 0) - (a.timestamp ?? 0));
+    if (!logsCalif.length) return null;
+    const ultimo = logsCalif[0];
+    try {
+      const parsed = JSON.parse(ultimo.entidadId || '{}');
+      return {
+        notaFinal: typeof parsed.notaFinal === 'number' ? parsed.notaFinal : null,
+        comentario: parsed.comentario ?? '',
+        notasIntegrantes: parsed.notasIntegrantes ?? {},
+        docenteId: ultimo.usuarioId,
+        timestamp: ultimo.timestamp,
+      };
+    } catch {
+      return null;
+    }
+  });
+
+  abrirCalificarGrupo() {
+    const actual = this.calificacionGrupo();
+    this.notaFinalGrupoInput = actual?.notaFinal ?? 8;
+    this.comentarioGrupoInput = actual?.comentario ?? '';
+    const mapaNotas: Record<string, number> = {};
+    for (const uid of this.integrantesGrupo()) {
+      mapaNotas[uid] = actual?.notasIntegrantes?.[uid] ?? (actual?.notaFinal ?? 8);
+    }
+    this.notasIntegrantesInput.set(mapaNotas);
+    this.mostrarModalCalificarGrupo.set(true);
+  }
+
+  cerrarCalificarGrupo() {
+    this.mostrarModalCalificarGrupo.set(false);
+  }
+
+  setNotaIntegrante(uid: string, valor: string | number) {
+    const num = Number(valor);
+    this.notasIntegrantesInput.update((actual) => ({
+      ...actual,
+      [uid]: Number.isFinite(num) ? Math.max(0, Math.min(10, num)) : 0,
+    }));
+  }
+
+  async guardarCalificacionFinalGrupo() {
+    const g = this.grupo();
+    const uid = this.userId();
+    if (!g || !uid || !this.esDocente()) return;
+
+    this.error.set(null);
+    try {
+      const notaFinal =
+        this.notaFinalGrupoInput !== null && Number.isFinite(Number(this.notaFinalGrupoInput))
+          ? Math.max(0, Math.min(10, Number(this.notaFinalGrupoInput)))
+          : null;
+      await this.materiaService.guardarCalificacionGrupo(g.id, uid, {
+        notaFinal,
+        comentario: this.comentarioGrupoInput.trim(),
+        notasIntegrantes: this.notasIntegrantesInput(),
+      });
+      await this.recargarLogs();
+      this.cerrarCalificarGrupo();
+    } catch (e: any) {
+      this.error.set(e.message ?? 'Error al guardar la calificación del grupo');
     }
   }
 
@@ -933,8 +1270,22 @@ export class GrupoDetalle implements OnInit {
       const materia = await this.materiaService.obtenerMateria(g.materiaId);
       if (!materia) throw new Error('Materia no encontrada');
 
-      const alumnos = (materia.alumnos ?? []).filter(
-        (a): a is string => !!a && a !== g.adminId
+      const docentesSet = new Set<string>([
+        ...(materia.creadorId ? [materia.creadorId] : []),
+        ...((materia.admins ?? []).filter((x): x is string => !!x)),
+        ...((materia.profesores ?? []).filter((x): x is string => !!x)),
+      ]);
+
+      const candidatosSet = new Set<string>();
+      for (const a of materia.alumnos ?? []) {
+        if (a && !docentesSet.has(a)) candidatosSet.add(a);
+      }
+      for (const i of g.integrantes ?? []) {
+        if (i && !docentesSet.has(i)) candidatosSet.add(i);
+      }
+
+      const alumnos = Array.from(candidatosSet).filter(
+        (a) => this.esDocente() || a !== g.adminId
       );
 
       const ocupados = await this.materiaService.alumnosEnOtroGrupo(
@@ -944,10 +1295,13 @@ export class GrupoDetalle implements OnInit {
       );
       const ocupadosSet = new Set(ocupados);
 
-      this.alumnosAgregables.set(alumnos.filter((a) => !ocupadosSet.has(a)));
+      const disponibles = alumnos.filter((a) => !ocupadosSet.has(a));
+      this.alumnosAgregables.set(disponibles);
+      const actualesSet = new Set((g.integrantes ?? []).filter((i): i is string => !!i));
+      this.alumnosDisponiblesParaAgregar.set(disponibles.filter((a) => !actualesSet.has(a)));
       this.integrantesSeleccionados.set(
         (g.integrantes ?? []).filter(
-          (i): i is string => !!i && i !== g.adminId
+          (i): i is string => !!i && !docentesSet.has(i) && (this.esDocente() || i !== g.adminId)
         )
       );
       this.mostrarModalIntegrantes.set(true);
@@ -956,15 +1310,75 @@ export class GrupoDetalle implements OnInit {
     }
   }
 
+  async agregarIntegranteDirecto(alumnoId: string) {
+    const g = this.grupo();
+    if (!g || !alumnoId) return;
+    this.error.set(null);
+    try {
+      const actualizado = await this.materiaService.agregarIntegranteAGrupo(g.id, alumnoId);
+      this.grupo.set(actualizado);
+      await this.materiaService.registrarLog(
+        g.id,
+        this.userId()!,
+        'editar_integrantes',
+        'Grupo',
+        g.id,
+      );
+      await this.recargarLogs();
+      await this.abrirGestionarIntegrantes();
+    } catch (e: any) {
+      this.error.set(e.message ?? 'Error al agregar integrante');
+    }
+  }
+
+  eliminarIntegranteDirecto(alumnoId: string) {
+    const g = this.grupo();
+    if (!g || !alumnoId || !this.esDocente()) return;
+    this.solicitarConfirmacion(
+      'Quitar integrante del grupo',
+      `¿Seguro que querés quitar a "${this.nombreUsuario(alumnoId)}" de este grupo?`,
+      'Quitar del grupo',
+      async () => {
+        this.error.set(null);
+        try {
+          const actualizado = await this.materiaService.eliminarIntegranteDeGrupo(g.id, alumnoId);
+          this.grupo.set(actualizado);
+          await this.materiaService.registrarLog(
+            g.id,
+            this.userId()!,
+            'editar_integrantes',
+            'Grupo',
+            g.id,
+          );
+          await this.recargarLogs();
+          await this.abrirGestionarIntegrantes();
+        } catch (e: any) {
+          this.error.set(e.message ?? 'Error al eliminar integrante');
+        }
+      },
+    );
+  }
+
   cerrarGestionarIntegrantes() {
     this.mostrarModalIntegrantes.set(false);
     this.alumnosAgregables.set([]);
+    this.alumnosDisponiblesParaAgregar.set([]);
     this.integrantesSeleccionados.set([]);
+  }
+
+  yaEsIntegranteActual(id: string): boolean {
+    return (this.grupo()?.integrantes ?? []).includes(id);
+  }
+
+  bloqueadoParaQuitar(id: string): boolean {
+    // Como alumno admin del grupo, no puede eliminar integrantes existentes
+    return !this.esDocente() && this.yaEsIntegranteActual(id);
   }
 
   toggleIntegrante(id: string) {
     const actuales = this.integrantesSeleccionados();
     if (actuales.includes(id)) {
+      if (this.bloqueadoParaQuitar(id)) return;
       this.integrantesSeleccionados.set(actuales.filter((u) => u !== id));
     } else {
       this.integrantesSeleccionados.set([...actuales, id]);
@@ -979,7 +1393,13 @@ export class GrupoDetalle implements OnInit {
     const g = this.grupo();
     if (!g) return;
     try {
-      const integrantes = [g.adminId, ...this.integrantesSeleccionados()];
+      let integrantes: string[];
+      if (this.esDocente()) {
+        integrantes = [...new Set(this.integrantesSeleccionados())];
+      } else {
+        const actuales = (g.integrantes ?? []).filter((i): i is string => !!i);
+        integrantes = [...new Set([g.adminId, ...actuales, ...this.integrantesSeleccionados()])];
+      }
       const actualizado = await this.materiaService.actualizarGrupo(g.id, {
         integrantes,
       });
@@ -1033,7 +1453,7 @@ export class GrupoDetalle implements OnInit {
   // ==== Eliminar grupo completo ====
 
   get puedeEliminarGrupo(): boolean {
-    return this.esAdminDelGrupo() && this.todasLasCards().length === 0;
+    return this.esDocente() || (this.esAdminDelGrupo() && this.todasLasCards().length === 0);
   }
 
   abrirConfirmarEliminarGrupo() {
@@ -1057,5 +1477,131 @@ export class GrupoDetalle implements OnInit {
     } catch (e: any) {
       this.error.set(e.message ?? 'Error al eliminar el grupo');
     }
+  }
+
+  // ==== Solicitudes de acceso al grupo ====
+
+  solicitudesPendientes = computed(() => {
+    const integrantesSet = new Set(this.integrantesGrupo());
+    const ordenados = [...this.logs()].sort((a, b) => (a.timestamp ?? 0) - (b.timestamp ?? 0));
+    const estadoPorUsuario = new Map<string, 'pendiente' | 'resuelta'>();
+
+    for (const log of ordenados) {
+      if (log.entidad !== 'SolicitudGrupo' || !log.entidadId) continue;
+      if (log.accion === 'solicitar_acceso') {
+        estadoPorUsuario.set(log.entidadId, 'pendiente');
+      } else if (log.accion === 'aprobar_acceso' || log.accion === 'rechazar_acceso') {
+        estadoPorUsuario.set(log.entidadId, 'resuelta');
+      }
+    }
+
+    const pendientes: string[] = [];
+    for (const [uid, estado] of estadoPorUsuario.entries()) {
+      if (estado === 'pendiente' && !integrantesSet.has(uid)) {
+        pendientes.push(uid);
+      }
+    }
+    return pendientes;
+  });
+
+  async responderSolicitud(solicitanteId: string, aprobar: boolean) {
+    const g = this.grupo();
+    const uid = this.userId();
+    if (!g || !uid) return;
+
+    this.error.set(null);
+    try {
+      if (aprobar && g.materiaId) {
+        const ocupados = await this.materiaService.alumnosEnOtroGrupo(
+          g.materiaId,
+          [solicitanteId],
+          g.id,
+        );
+        if (ocupados.length > 0) {
+          this.error.set('Este alumno ya forma parte de otro grupo en esta aula.');
+          return;
+        }
+      }
+      await this.materiaService.resolverSolicitudAcceso(g.id, solicitanteId, aprobar, uid);
+      const actualizado = await this.materiaService.obtenerGrupo(g.id);
+      if (actualizado) this.grupo.set(actualizado);
+      await this.recargarLogs();
+    } catch (e: any) {
+      this.error.set(e.message ?? 'Error al procesar la solicitud');
+    }
+  }
+
+  // ==== Perfiles legibles, vencimientos e historial ====
+
+  nombreUsuario(id: string | null | undefined): string {
+    if (!id) return '';
+    return this.usuariosMap()[id] ?? `Usuario (${id.slice(0, 6)})`;
+  }
+
+  nombresAsignados(card: Card): string {
+    const lista = (card.asignados ?? []).filter((a): a is string => !!a);
+    if (lista.length === 0) return 'Sin asignar';
+    return lista.map((id) => this.nombreUsuario(id)).join(', ');
+  }
+
+  esVencida(card: Card): boolean {
+    if (!card.fechaLimite || card.estado === 'hecho') return false;
+    const hoy = new Date().toISOString().slice(0, 10);
+    return card.fechaLimite < hoy;
+  }
+
+  esProximaAVencer(card: Card): boolean {
+    if (!card.fechaLimite || card.estado === 'hecho' || this.esVencida(card)) return false;
+    const hoy = new Date();
+    const limite = new Date(card.fechaLimite + 'T23:59:59');
+    const diffDias = (limite.getTime() - hoy.getTime()) / (1000 * 60 * 60 * 24);
+    return diffDias >= 0 && diffDias <= 2;
+  }
+
+  abrirHistorial() {
+    this.mostrarModalLogs.set(true);
+  }
+
+  cerrarHistorial() {
+    this.mostrarModalLogs.set(false);
+  }
+
+  logsOrdenados = computed(() => {
+    return [...this.logs()]
+      .filter((l) => l.accion !== 'registro_perfil')
+      .sort((a, b) => (b.timestamp ?? 0) - (a.timestamp ?? 0));
+  });
+
+  describirLog(log: LogActividad): string {
+    const mapa: Record<string, string> = {
+      crear_card: 'creó una tarea',
+      editar_card: 'editó una tarea',
+      mover_card: 'cambió de columna una tarea',
+      revisar_card: 'revisó una tarea',
+      eliminar_card: 'eliminó una tarea',
+      adjuntar_archivo: 'adjuntó un archivo',
+      eliminar_adjunto: 'eliminó un adjunto',
+      puntuar_card: 'calificó una tarea',
+      evaluar_par: 'completó una evaluación de pares',
+      editar_nombre: 'cambió el nombre del grupo',
+      editar_integrantes: 'actualizó los integrantes del grupo',
+      salir_grupo: 'salió del grupo',
+      solicitar_acceso: 'solicitó unirse al grupo',
+      aprobar_acceso: 'aceptó una solicitud de ingreso',
+      rechazar_acceso: 'rechazó una solicitud de ingreso',
+      calificar_grupo: 'calificó al grupo y sus integrantes',
+    };
+    return mapa[log.accion] ?? log.accion;
+  }
+
+  fechaLog(log: LogActividad): string {
+    if (!log.timestamp) return '';
+    const ms = log.timestamp < 1e12 ? log.timestamp * 1000 : log.timestamp;
+    return new Date(ms).toLocaleString('es-AR', {
+      day: '2-digit',
+      month: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
   }
 }

@@ -4,26 +4,39 @@ import { FormsModule } from '@angular/forms';
 import { ActivatedRoute, Router } from '@angular/router';
 import { MateriaService } from '../../services/materia';
 import { AuthService } from '../../services/auth';
+import { DashboardComponent } from '../../components/dashboard/dashboard';
 import type { Schema } from '../../../../amplify/data/resource';
 
 type Materia = Schema['Materia']['type'];
 type Grupo = Schema['Grupo']['type'];
+type Card = Schema['Card']['type'];
 
 @Component({
   selector: 'app-aula-detalle',
   standalone: true,
-  imports: [CommonModule, FormsModule],
+  imports: [CommonModule, FormsModule, DashboardComponent],
   templateUrl: './aula-detalle.html',
   styleUrl: './aula-detalle.scss',
 })
 export class AulaDetalle implements OnInit {
   materia = signal<Materia | null>(null);
   grupos = signal<Grupo[]>([]);
+  cardsPorGrupo = signal<Record<string, Card[]>>({});
+  usuariosMap = signal<Record<string, string>>({
+    'b34c1aaa-5011-704e-e9bf-e6f62c2ee306': 'luciano.barbosa30@gmail.com',
+    'b3dc0ada-20e1-70bf-133e-5ce5f6c2d36c': 'luciano_l17@hotmail.com',
+    'd3bcaaea-8091-7090-e940-37cf06abf4c1': 'leandroserapio95@gmail.com',
+    '34181498-4001-7030-bfe0-92e87e7858b3': 'luciano_l17@hotmail.com',
+  });
   miGrupo = signal<Grupo | null>(null);
   userId = signal<string | null>(null);
   rol = signal<'admin' | 'profesor' | 'alumno' | null>(null);
   cargando = signal(true);
   error = signal<string | null>(null);
+
+  // Solicitudes de acceso por grupoId -> lista de userIds solicitantes
+  solicitudesPorGrupo = signal<Record<string, string[]>>({});
+  enviandoSolicitudGrupoId = signal<string | null>(null);
 
   // Modal crear/editar grupo
   mostrarModalGrupo = signal(false);
@@ -32,9 +45,14 @@ export class AulaDetalle implements OnInit {
   nombreGrupo = '';
   integrantesSeleccionados = signal<string[]>([]);
 
+  // Modal participantes y roles (promover alumnos a profesor)
+  mostrarModalParticipantes = signal(false);
+  nuevoAlumnoEmail = '';
+
   // Modal confirmar eliminar
   mostrarConfirmarEliminar = signal(false);
   grupoAEliminar = signal<Grupo | null>(null);
+  alumnoAQuitarDelAula = signal<string | null>(null);
 
   // Modal crear grupo (alumno)
   mostrarCrearGrupoAlumno = signal(false);
@@ -56,6 +74,13 @@ export class AulaDetalle implements OnInit {
       const uid = await this.auth.getUserId();
       this.userId.set(uid);
 
+      this.auth.getEmail?.().then((email) => {
+        if (email) {
+          this.usuariosMap.update((m) => ({ ...m, [uid]: email }));
+          this.materiaService.sincronizarPerfilUsuario?.(uid, email);
+        }
+      }).catch(() => {});
+
       const materia = await this.materiaService.obtenerMateria(id);
       if (!materia) throw new Error('Aula no encontrada');
       this.materia.set(materia);
@@ -64,12 +89,12 @@ export class AulaDetalle implements OnInit {
       this.rol.set(rol);
       if (!rol) throw new Error('No tenés acceso a esta aula');
 
-      if (rol === 'alumno') {
-        const grupo = await this.materiaService.obtenerMiGrupo(id, uid);
-        this.miGrupo.set(grupo);
-      } else {
-        await this.recargarGrupos();
+      if (this.materiaService.obtenerMapaUsuarios) {
+        const mapa = await this.materiaService.obtenerMapaUsuarios();
+        this.usuariosMap.update((actual) => ({ ...actual, ...mapa }));
       }
+
+      await this.recargarGrupos();
     } catch (e: any) {
       this.error.set(e.message ?? 'Error al cargar el aula');
     } finally {
@@ -79,25 +104,289 @@ export class AulaDetalle implements OnInit {
 
   private async recargarGrupos() {
     const materia = this.materia();
-    if (!materia) return;
+    const uid = this.userId();
+    if (!materia || !uid) return;
+
     const grupos = await this.materiaService.listarGruposDeMateria(materia.id);
     this.grupos.set(grupos);
+
+    if (this.rol() === 'alumno') {
+      const propio = grupos.find((g) => (g.integrantes ?? []).includes(uid)) ?? null;
+      this.miGrupo.set(propio);
+    }
+
+    const mapaSolicitudes: Record<string, string[]> = {};
+    const mapaCards: Record<string, Card[]> = {};
+
+    await Promise.all(
+      grupos.map(async (g) => {
+        try {
+          if (this.materiaService.listarSolicitudesPendientesDeGrupo) {
+            mapaSolicitudes[g.id] = await this.materiaService.listarSolicitudesPendientesDeGrupo(
+              g.id,
+              g.integrantes ?? [],
+            );
+          } else {
+            mapaSolicitudes[g.id] = [];
+          }
+        } catch {
+          mapaSolicitudes[g.id] = [];
+        }
+
+        if (this.esDocente && this.materiaService.listarCardsDeGrupo) {
+          try {
+            mapaCards[g.id] = await this.materiaService.listarCardsDeGrupo(g.id);
+          } catch {
+            mapaCards[g.id] = [];
+          }
+        }
+      }),
+    );
+
+    this.solicitudesPorGrupo.set(mapaSolicitudes);
+    this.cardsPorGrupo.set(mapaCards);
   }
 
   // ==== Helpers ====
+
+  nombreUsuario(id: string | null | undefined): string {
+    if (!id) return '';
+    return this.usuariosMap()[id] ?? `Usuario (${id.slice(0, 6)})`;
+  }
+
+  nombresIntegrantesGrupo(g: Grupo): string {
+    const lista = (g.integrantes ?? []).filter((i): i is string => !!i);
+    if (lista.length === 0) return 'Sin integrantes';
+    return lista.map((id) => this.nombreUsuario(id)).join(', ');
+  }
+
+  grupoDeAlumno(alumnoId: string): Grupo | null {
+    return this.grupos().find((g) => (g.integrantes ?? []).includes(alumnoId)) ?? null;
+  }
 
   get esDocente(): boolean {
     const r = this.rol();
     return r === 'admin' || r === 'profesor';
   }
 
-  get alumnosDisponibles(): string[] {
-    // Todos los alumnos de la materia menos el user actual (si es alumno)
-    return (this.materia()?.alumnos ?? []).filter((id): id is string => !!id);
+  get adminsAula(): string[] {
+    const m = this.materia();
+    if (!m) return [];
+    const set = new Set<string>();
+    if (m.creadorId) set.add(m.creadorId);
+    for (const id of m.admins ?? []) {
+      if (id) set.add(id);
+    }
+    return Array.from(set);
   }
 
-    get esAdmin(): boolean {
+  get profesoresAula(): string[] {
+    const admins = new Set(this.adminsAula);
+    return (this.materia()?.profesores ?? []).filter(
+      (id): id is string => !!id && !admins.has(id),
+    );
+  }
+
+  get alumnosDisponibles(): string[] {
+    const docentes = new Set([...this.adminsAula, ...this.profesoresAula]);
+    const set = new Set<string>();
+    for (const id of this.materia()?.alumnos ?? []) {
+      if (id && !docentes.has(id)) set.add(id);
+    }
+    for (const g of this.grupos()) {
+      for (const id of g.integrantes ?? []) {
+        if (id && !docentes.has(id)) set.add(id);
+      }
+    }
+    return Array.from(set);
+  }
+
+  get esAdmin(): boolean {
     return this.rol() === 'admin';
+  }
+
+  get otrosGruposDelSalon(): Grupo[] {
+    const miId = this.miGrupo()?.id;
+    return this.grupos().filter((g) => g.id !== miId);
+  }
+
+  yaSolicitoAcceso(grupoId: string): boolean {
+    const uid = this.userId();
+    if (!uid) return false;
+    return (this.solicitudesPorGrupo()[grupoId] ?? []).includes(uid);
+  }
+
+  solicitudesDeGrupo(grupoId: string): string[] {
+    return this.solicitudesPorGrupo()[grupoId] ?? [];
+  }
+
+  esAdminDeMiGrupo(): boolean {
+    const g = this.miGrupo();
+    const uid = this.userId();
+    return !!g && !!uid && g.adminId === uid;
+  }
+
+  async solicitarAcceso(grupo: Grupo, event?: Event) {
+    event?.stopPropagation();
+    const uid = this.userId();
+    if (!uid || this.miGrupo()) return;
+
+    this.enviandoSolicitudGrupoId.set(grupo.id);
+    this.error.set(null);
+    try {
+      await this.materiaService.solicitarAccesoGrupo(grupo.id, uid);
+      await this.recargarGrupos();
+    } catch (e: any) {
+      this.error.set(e.message ?? 'No se pudo enviar la solicitud');
+    } finally {
+      this.enviandoSolicitudGrupoId.set(null);
+    }
+  }
+
+  async responderSolicitud(grupo: Grupo, solicitanteId: string, aprobar: boolean, event?: Event) {
+    event?.stopPropagation();
+    const uid = this.userId();
+    const materia = this.materia();
+    if (!uid || !materia) return;
+
+    this.error.set(null);
+    try {
+      if (aprobar) {
+        const ocupados = await this.materiaService.alumnosEnOtroGrupo(
+          materia.id,
+          [solicitanteId],
+          grupo.id,
+        );
+        if (ocupados.length > 0) {
+          this.error.set('Este alumno ya forma parte de otro grupo en esta aula.');
+          return;
+        }
+      }
+      await this.materiaService.resolverSolicitudAcceso(grupo.id, solicitanteId, aprobar, uid);
+      await this.recargarGrupos();
+    } catch (e: any) {
+      this.error.set(e.message ?? 'Error al procesar la solicitud');
+    }
+  }
+
+  // ==== Gestión de participantes / Promover alumnos ====
+
+  abrirParticipantes() {
+    this.mostrarModalParticipantes.set(true);
+    this.error.set(null);
+  }
+
+  cerrarParticipantes() {
+    this.mostrarModalParticipantes.set(false);
+  }
+
+  async promoverAProfesor(alumnoId: string) {
+    const m = this.materia();
+    if (!m) return;
+    try {
+      const actualizada = await this.materiaService.promoverAlumnoAProfesor(m.id, alumnoId);
+      this.materia.set(actualizada);
+    } catch (e: any) {
+      this.error.set(e.message ?? 'No se pudo promover al alumno');
+    }
+  }
+
+  async degradarAAlumno(profesorId: string) {
+    const m = this.materia();
+    if (!m) return;
+    try {
+      const actualizada = await this.materiaService.degradarProfesorAAlumno(m.id, profesorId);
+      this.materia.set(actualizada);
+    } catch (e: any) {
+      this.error.set(e.message ?? 'No se pudo cambiar el rol');
+    }
+  }
+
+  quitarAlumnoDelAula(alumnoId: string) {
+    this.alumnoAQuitarDelAula.set(alumnoId);
+  }
+
+  cancelarQuitarAlumnoDelAula() {
+    this.alumnoAQuitarDelAula.set(null);
+  }
+
+  async confirmarQuitarAlumnoDelAula() {
+    const m = this.materia();
+    const alumnoId = this.alumnoAQuitarDelAula();
+    if (!m || !alumnoId) return;
+    this.alumnoAQuitarDelAula.set(null);
+    try {
+      const actualizada = await this.materiaService.eliminarAlumnoDeMateria(m.id, alumnoId);
+      this.materia.set(actualizada);
+      await this.recargarGrupos();
+    } catch (e: any) {
+      this.error.set(e.message ?? 'No se pudo eliminar al alumno del aula');
+    }
+  }
+
+  get usuariosSugeridosParaAula(): { id: string; email: string }[] {
+    const enAula = new Set([
+      ...this.adminsAula,
+      ...this.profesoresAula,
+      ...this.alumnosDisponibles,
+    ]);
+    const vistosEmail = new Set<string>();
+    const lista: { id: string; email: string }[] = [];
+    for (const [id, email] of Object.entries(this.usuariosMap())) {
+      if (!enAula.has(id) && !vistosEmail.has(email.toLowerCase())) {
+        vistosEmail.add(email.toLowerCase());
+        lista.push({ id, email });
+      }
+    }
+    return lista;
+  }
+
+  async agregarAlumnoAlAula(identificador?: string) {
+    const m = this.materia();
+    const valor = (identificador ?? this.nuevoAlumnoEmail).trim();
+    if (!m || !valor) return;
+
+    this.error.set(null);
+    try {
+      const actualizada = await this.materiaService.agregarAlumnoAMateria(m.id, valor);
+      this.materia.set(actualizada);
+      this.nuevoAlumnoEmail = '';
+      await this.recargarGrupos();
+    } catch (e: any) {
+      this.error.set(e.message ?? 'No se pudo agregar al integrante al aula');
+    }
+  }
+
+  async asignarAlumnoAGrupoDesdeAula(alumnoId: string, event: Event) {
+    const select = event.target as HTMLSelectElement;
+    const grupoDestinoId = select.value;
+    const m = this.materia();
+    if (!m) return;
+
+    this.error.set(null);
+    try {
+      const actual = this.grupoDeAlumno(alumnoId);
+      if (actual && actual.id !== grupoDestinoId) {
+        await this.materiaService.eliminarIntegranteDeGrupo(actual.id, alumnoId);
+      }
+      if (grupoDestinoId) {
+        await this.materiaService.agregarIntegranteAGrupo(grupoDestinoId, alumnoId);
+      }
+      await this.recargarGrupos();
+    } catch (e: any) {
+      this.error.set(e.message ?? 'No se pudo actualizar el grupo del alumno');
+    }
+  }
+
+  async quitarIntegranteDeGrupoDirecto(grupo: Grupo, alumnoId: string, event?: Event) {
+    event?.stopPropagation();
+    this.error.set(null);
+    try {
+      await this.materiaService.eliminarIntegranteDeGrupo(grupo.id, alumnoId);
+      await this.recargarGrupos();
+    } catch (e: any) {
+      this.error.set(e.message ?? 'No se pudo quitar al integrante del grupo');
+    }
   }
 
   volver() {
@@ -124,6 +413,7 @@ export class AulaDetalle implements OnInit {
     try {
       const nuevo = await this.materiaService.crearGrupo(materia.id, this.nombreGrupo.trim(), uid);
       this.miGrupo.set(nuevo);
+      await this.recargarGrupos();
       this.cerrarCrearGrupoAlumno();
     } catch (e: any) {
       this.error.set(e.message ?? 'Error al crear el grupo');
@@ -146,10 +436,9 @@ export class AulaDetalle implements OnInit {
     this.modoEdicion.set(true);
     this.grupoEditandoId.set(g.id);
     this.nombreGrupo = g.nombre;
-    // Excluye al admin del grupo (profesor) si no es alumno de la materia
-    const alumnos = this.materia()?.alumnos ?? [];
+    const disponibles = new Set(this.alumnosDisponibles);
     this.integrantesSeleccionados.set(
-      (g.integrantes ?? []).filter((uid): uid is string => !!uid && alumnos.includes(uid)),
+      (g.integrantes ?? []).filter((uid): uid is string => !!uid && disponibles.has(uid)),
     );
     this.error.set(null);
     this.mostrarModalGrupo.set(true);
@@ -185,14 +474,14 @@ export class AulaDetalle implements OnInit {
       const integrantes = this.integrantesSeleccionados();
       const grupoIdExcluir = this.modoEdicion() ? this.grupoEditandoId() : undefined;
 
-      // Regla: un alumno solo puede estar en un grupo por materia
       const ocupados = await this.materiaService.alumnosEnOtroGrupo(
         materia.id,
         integrantes,
         grupoIdExcluir ?? undefined,
       );
       if (ocupados.length > 0) {
-        this.error.set(`Estos alumnos ya están en otro grupo: ${ocupados.join(', ')}`);
+        const nombres = ocupados.map((id) => this.nombreUsuario(id)).join(', ');
+        this.error.set(`Estos alumnos ya están en otro grupo: ${nombres}`);
         return;
       }
 
@@ -202,15 +491,12 @@ export class AulaDetalle implements OnInit {
           integrantes,
         });
       } else {
-        // Crear como profesor: adminId = profesor, integrantes seleccionados
         const nuevo = await this.materiaService.crearGrupo(
           materia.id,
           this.nombreGrupo.trim(),
           uid,
         );
-        if (integrantes.length > 0) {
-          await this.materiaService.actualizarGrupo(nuevo.id, { integrantes });
-        }
+        await this.materiaService.actualizarGrupo(nuevo.id, { integrantes });
       }
 
       await this.recargarGrupos();
@@ -245,13 +531,16 @@ export class AulaDetalle implements OnInit {
     }
   }
 
-  // ==== Ver grupo (próximo paso) ====
+  // ==== Ver grupo ====
 
   abrirGrupo(grupoId: string) {
+    if (!this.esDocente && this.miGrupo()?.id !== grupoId) {
+      return;
+    }
     this.router.navigate(['/grupo', grupoId]);
   }
 
-    // ==== Eliminar aula ====
+  // ==== Eliminar aula ====
 
   abrirConfirmarEliminarAula() {
     this.mostrarConfirmarEliminarAula.set(true);

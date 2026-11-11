@@ -7,34 +7,41 @@
   <ng-container *ngIf="!cargando() && materia()">
     <!-- CABECERA -->
     <header class="cabecera">
-  <div>
-    <h1>{{ materia()!.nombre }}</h1>
-    <p *ngIf="materia()!.descripcion" class="descripcion">
-      {{ materia()!.descripcion }}
-    </p>
-  </div>
+      <div>
+        <h1>{{ materia()!.nombre }}</h1>
+        <p *ngIf="materia()!.descripcion" class="descripcion">
+          {{ materia()!.descripcion }}
+        </p>
+      </div>
 
-  <div class="cabecera-acciones">
-    <div class="rol-badge" [class]="'rol-' + rol()">
-      {{ rol() === 'admin' ? 'Admin' : rol() === 'profesor' ? 'Profesor' : 'Alumno' }}
-    </div>
-    <button
-      *ngIf="esAdmin"
-      class="btn-peligro"
-      (click)="abrirConfirmarEliminarAula()"
-    >
-      🗑️ Eliminar aula
-    </button>
-  </div>
-</header>
+      <div class="cabecera-acciones">
+        <div class="rol-badge" [class]="'rol-' + rol()">
+          {{ rol() === 'admin' ? 'Admin' : rol() === 'profesor' ? 'Profesor' : 'Alumno' }}
+        </div>
+        <button
+          *ngIf="esAdmin"
+          class="btn-peligro"
+          (click)="abrirConfirmarEliminarAula()"
+        >
+          🗑️ Eliminar aula
+        </button>
+      </div>
+    </header>
 
     <!-- VISTA PROFESOR / ADMIN -->
     <section *ngIf="esDocente">
+      <!-- Dashboard consolidado del docente -->
+      <app-dashboard
+        [grupos]="grupos()"
+        [cardsPorGrupo]="cardsPorGrupo()"
+        [totalAlumnos]="alumnosDisponibles.length"
+      ></app-dashboard>
+
       <div class="header-seccion">
-        <h2>Grupos ({{ grupos().length }})</h2>
+        <h2>Grupos del aula ({{ grupos().length }})</h2>
         <div class="acciones-seccion">
           <div class="codigo-invitacion">
-            Código: <code>{{ materia()!.codigoInvitacion }}</code>
+            Código de invitación: <code>{{ materia()!.codigoInvitacion }}</code>
           </div>
           <button class="btn-primario" (click)="abrirCrearGrupo()">+ Crear grupo</button>
         </div>
@@ -46,11 +53,11 @@
         <div class="card-grupo" *ngFor="let g of grupos()" (click)="abrirGrupo(g.id)">
           <div class="card-header">
             <h3>{{ g.nombre }}</h3>
-            <div class="card-acciones">
-              <button class="btn-icono" title="Editar" (click)="abrirEditarGrupo(g, $event)">
+            <div class="card-acciones" (click)="$event.stopPropagation()">
+              <button class="btn-icono" title="Editar grupo e integrantes" (click)="abrirEditarGrupo(g, $event)">
                 ✏️
               </button>
-              <button class="btn-icono" title="Eliminar" (click)="confirmarEliminar(g, $event)">
+              <button class="btn-icono" title="Eliminar grupo" (click)="confirmarEliminar(g, $event)">
                 🗑️
               </button>
             </div>
@@ -60,29 +67,241 @@
               (g.integrantes?.length ?? 0) === 1 ? '' : 's'
             }}
           </p>
+          <div class="integrantes-chips-grupo" *ngIf="g.integrantes?.length" (click)="$event.stopPropagation()">
+            <span class="chip-miembro" *ngFor="let miembroId of g.integrantes">
+              {{ nombreUsuario(miembroId) }}
+              <button
+                type="button"
+                class="btn-quitar-chip"
+                title="Eliminar integrante del grupo"
+                (click)="quitarIntegranteDeGrupoDirecto(g, miembroId || '', $event)"
+              >
+                ✕
+              </button>
+            </span>
+          </div>
+
+          <!-- Solicitudes pendientes (visible para docente) -->
+          <div
+            class="solicitudes-box"
+            *ngIf="solicitudesDeGrupo(g.id).length > 0"
+            (click)="$event.stopPropagation()"
+          >
+            <p class="solicitudes-titulo">
+              🔔 Solicitudes pendientes ({{ solicitudesDeGrupo(g.id).length }})
+            </p>
+            <div class="solicitud-fila" *ngFor="let solId of solicitudesDeGrupo(g.id)">
+              <span class="solicitante-id" [title]="solId">{{ nombreUsuario(solId) }}</span>
+              <div class="solicitud-botones">
+                <button
+                  class="btn-aceptar"
+                  (click)="responderSolicitud(g, solId, true, $event)"
+                >
+                  ✓ Aceptar
+                </button>
+                <button
+                  class="btn-rechazar"
+                  (click)="responderSolicitud(g, solId, false, $event)"
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+          </div>
+
           <span class="proximamente">Ver tablero →</span>
+        </div>
+      </div>
+
+      <!-- SECCIÓN VISIBLE DE LISTA DE ALUMNOS Y DOCENTES DEL AULA -->
+      <div class="panel-alumnos-docente">
+        <div class="header-seccion">
+          <h2>🎓 Alumnos inscriptos en el aula ({{ alumnosDisponibles.length }})</h2>
+        </div>
+
+        <!-- Formulario para agregar integrante al aula -->
+        <div class="agregar-alumno-box">
+          <div class="agregar-alumno-form">
+            <input
+              [(ngModel)]="nuevoAlumnoEmail"
+              placeholder="Ingresá el email del alumno para agregarlo al aula…"
+              (keyup.enter)="agregarAlumnoAlAula()"
+            />
+            <button class="btn-primario" (click)="agregarAlumnoAlAula()">
+              + Agregar al aula
+            </button>
+          </div>
+          <div class="sugeridos-aula" *ngIf="usuariosSugeridosParaAula.length > 0">
+            <span class="sugeridos-label">Usuarios registrados disponibles:</span>
+            <button
+              type="button"
+              class="btn-sugerido"
+              *ngFor="let u of usuariosSugeridosParaAula"
+              (click)="agregarAlumnoAlAula(u.id)"
+            >
+              + {{ u.email }}
+            </button>
+          </div>
+        </div>
+
+        <p *ngIf="alumnosDisponibles.length === 0" class="vacio">
+          Todavía no hay alumnos inscriptos en esta aula. Podés agregarlos arriba o compartir el código
+          <code>{{ materia()!.codigoInvitacion }}</code>.
+        </p>
+
+        <div class="tabla-alumnos" *ngIf="alumnosDisponibles.length > 0">
+          <div class="fila-alumno-aula" *ngFor="let alumnoId of alumnosDisponibles">
+            <div class="alumno-info-principal">
+              <strong class="alumno-nombre-email">{{ nombreUsuario(alumnoId) }}</strong>
+              <label class="selector-grupo-inline">
+                <span>Grupo:</span>
+                <select
+                  [value]="grupoDeAlumno(alumnoId)?.id || ''"
+                  (change)="asignarAlumnoAGrupoDesdeAula(alumnoId, $event)"
+                >
+                  <option value="">Sin grupo</option>
+                  <option *ngFor="let g of grupos()" [value]="g.id">
+                    {{ g.nombre }}
+                  </option>
+                </select>
+              </label>
+            </div>
+            <div class="acciones-alumno-aula">
+              <button
+                *ngIf="grupoDeAlumno(alumnoId)"
+                class="btn-mini"
+                (click)="abrirGrupo(grupoDeAlumno(alumnoId)!.id)"
+              >
+                Ir a su grupo →
+              </button>
+              <button
+                class="btn-mini btn-promover"
+                (click)="promoverAProfesor(alumnoId)"
+              >
+                ⬆️ Hacer profesor
+              </button>
+              <button
+                class="btn-mini btn-quitar-aula"
+                (click)="quitarAlumnoDelAula(alumnoId)"
+              >
+                🗑️ Eliminar del aula
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Profesores del aula -->
+        <div class="subseccion-profesores" *ngIf="profesoresAula.length > 0">
+          <h3>Profesores adjuntos ({{ profesoresAula.length }})</h3>
+          <div class="fila-alumno-aula" *ngFor="let profId of profesoresAula">
+            <div class="alumno-info-principal">
+              <strong class="alumno-nombre-email">{{ nombreUsuario(profId) }}</strong>
+              <span class="rol-badge rol-profesor">Profesor</span>
+            </div>
+            <div class="acciones-alumno-aula" *ngIf="esAdmin">
+              <button class="btn-mini" (click)="degradarAAlumno(profId)">
+                Pasar a alumno
+              </button>
+            </div>
+          </div>
         </div>
       </div>
     </section>
 
     <!-- VISTA ALUMNO -->
     <section *ngIf="!esDocente">
+      <!-- Si todavía no pertenece a ningún grupo -->
       <div *ngIf="!miGrupo()" class="sin-grupo">
         <h2>Todavía no estás en ningún grupo</h2>
-        <p>Podés crear tu propio grupo y luego invitar a tus compañeros.</p>
+        <p>Podés crear tu propio grupo o solicitar acceso a uno de los grupos existentes del salón.</p>
         <button class="btn-primario" (click)="abrirCrearGrupoAlumno()">+ Crear grupo</button>
       </div>
 
-      <div *ngIf="miGrupo()" class="mi-grupo">
+      <!-- Si ya pertenece a un grupo -->
+      <div *ngIf="miGrupo()" class="mi-grupo card-mi-grupo">
         <div class="header-seccion">
-          <h2>Mi grupo: {{ miGrupo()!.nombre }}</h2>
-          <button class="btn-primario" (click)="abrirGrupo(miGrupo()!.id)">Ver tablero</button>
+          <div>
+            <h2>Mi grupo: {{ miGrupo()!.nombre }}</h2>
+            <p class="meta">
+              {{ miGrupo()!.integrantes?.length ?? 0 }} integrante{{
+                (miGrupo()!.integrantes?.length ?? 0) === 1 ? '' : 's'
+              }} ({{ nombresIntegrantesGrupo(miGrupo()!) }})
+              · {{ esAdminDeMiGrupo() ? 'Sos administrador del grupo' : 'Integrante' }}
+            </p>
+          </div>
+          <button class="btn-primario" (click)="abrirGrupo(miGrupo()!.id)">Ver tablero →</button>
         </div>
-        <p class="meta">
-          {{ miGrupo()!.integrantes?.length ?? 0 }} integrante{{
-            (miGrupo()!.integrantes?.length ?? 0) === 1 ? '' : 's'
-          }}
+
+        <!-- Solicitudes pendientes para mi grupo (si soy el admin del grupo) -->
+        <div
+          class="solicitudes-box"
+          *ngIf="esAdminDeMiGrupo() && solicitudesDeGrupo(miGrupo()!.id).length > 0"
+        >
+          <p class="solicitudes-titulo">
+            🔔 Compañeros que solicitaron unirse ({{ solicitudesDeGrupo(miGrupo()!.id).length }})
+          </p>
+          <div class="solicitud-fila" *ngFor="let solId of solicitudesDeGrupo(miGrupo()!.id)">
+            <span class="solicitante-id" [title]="solId">{{ nombreUsuario(solId) }}</span>
+            <div class="solicitud-botones">
+              <button
+                class="btn-aceptar"
+                (click)="responderSolicitud(miGrupo()!, solId, true, $event)"
+              >
+                ✓ Aceptar
+              </button>
+              <button
+                class="btn-rechazar"
+                (click)="responderSolicitud(miGrupo()!, solId, false, $event)"
+              >
+                ✕ Rechazar
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Listado de grupos del salón para alumnos -->
+      <div class="grupos-salon">
+        <div class="header-seccion">
+          <h2>Grupos del salón ({{ otrosGruposDelSalon.length }})</h2>
+        </div>
+
+        <p *ngIf="otrosGruposDelSalon.length === 0" class="vacio">
+          No hay otros grupos creados en este salón todavía.
         </p>
+
+        <div class="grid-grupos" *ngIf="otrosGruposDelSalon.length > 0">
+          <div class="card-grupo card-grupo-alumno" *ngFor="let g of otrosGruposDelSalon">
+            <div class="card-header">
+              <h3>{{ g.nombre }}</h3>
+            </div>
+            <p class="meta">
+              {{ g.integrantes?.length ?? 0 }} integrante{{
+                (g.integrantes?.length ?? 0) === 1 ? '' : 's'
+              }}:
+              <strong>{{ nombresIntegrantesGrupo(g) }}</strong>
+            </p>
+
+            <!-- Botón Solicitar acceso solo si el alumno aún no tiene grupo -->
+            <ng-container *ngIf="!miGrupo()">
+              <button
+                *ngIf="!yaSolicitoAcceso(g.id)"
+                class="btn-secundario btn-solicitar"
+                [disabled]="enviandoSolicitudGrupoId() === g.id"
+                (click)="solicitarAcceso(g, $event)"
+              >
+                {{
+                  enviandoSolicitudGrupoId() === g.id
+                    ? 'Enviando…'
+                    : '🙋 Solicitar acceso'
+                }}
+              </button>
+              <span *ngIf="yaSolicitoAcceso(g.id)" class="badge-pendiente">
+                ⏳ Solicitud enviada
+              </span>
+            </ng-container>
+          </div>
+        </div>
       </div>
     </section>
   </ng-container>
@@ -114,7 +333,7 @@
             [checked]="estaSeleccionado(alumnoId)"
             (change)="toggleIntegrante(alumnoId)"
           />
-          <span class="alumno-id">{{ alumnoId }}</span>
+          <span class="alumno-id">{{ nombreUsuario(alumnoId) }}</span>
         </label>
       </div>
     </div>
@@ -179,6 +398,29 @@
     <div class="modal-acciones">
       <button (click)="cancelarEliminarAula()">Cancelar</button>
       <button class="btn-peligro" (click)="eliminarAula()">Eliminar</button>
+    </div>
+  </div>
+</div>
+
+
+<!-- CONFIRMAR QUITAR ALUMNO DEL AULA -->
+<div
+  class="modal-backdrop"
+  *ngIf="alumnoAQuitarDelAula()"
+  (click)="cancelarQuitarAlumnoDelAula()"
+>
+  <div class="modal" (click)="$event.stopPropagation()">
+    <h3>⚠️ Quitar alumno del aula</h3>
+    <p>
+      ¿Seguro que querés dar de baja a
+      <strong>{{ nombreUsuario(alumnoAQuitarDelAula()) }}</strong> de esta aula?
+      También se lo quitará de su grupo actual.
+    </p>
+    <div class="modal-acciones">
+      <button (click)="cancelarQuitarAlumnoDelAula()">Cancelar</button>
+      <button class="btn-peligro" (click)="confirmarQuitarAlumnoDelAula()">
+        Quitar del aula
+      </button>
     </div>
   </div>
 </div>

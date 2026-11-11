@@ -1,6 +1,6 @@
 import { Injectable } from '@angular/core';
 import { generateClient } from 'aws-amplify/data';
-import { getUrl, uploadData } from 'aws-amplify/storage';
+import { getUrl, remove, uploadData } from 'aws-amplify/storage';
 import type { Schema } from '../../../amplify/data/resource';
 
 type Materia = Schema['Materia']['type'];
@@ -60,7 +60,7 @@ export class MateriaService {
    * Devuelve el rol del usuario dentro de la materia, o null si no participa.
    */
   obtenerRol(materia: Materia, userId: string): 'admin' | 'profesor' | 'alumno' | null {
-    if (materia.admins?.includes(userId)) return 'admin';
+    if (materia.creadorId === userId || materia.admins?.includes(userId)) return 'admin';
     if (materia.profesores?.includes(userId)) return 'profesor';
     if (materia.alumnos?.includes(userId)) return 'alumno';
     return null;
@@ -164,7 +164,8 @@ export class MateriaService {
 
     const card = await this.obtenerCard(cardId);
     const adjuntoKey = result.path ?? key;
-    const adjuntos = [...(card?.adjuntos ?? []), adjuntoKey];
+    const existentes = (card?.adjuntos ?? []).filter((a): a is string => typeof a === 'string' && a.length > 0);
+    const adjuntos = [...existentes, adjuntoKey];
 
     const { errors } = await client.models.Card.update({
       id: cardId,
@@ -178,6 +179,22 @@ export class MateriaService {
   async obtenerUrlAdjunto(key: string): Promise<string> {
     const { url } = await getUrl({ path: key });
     return url.toString();
+  }
+
+  async eliminarAdjunto(cardId: string, key: string): Promise<void> {
+    const card = await this.obtenerCard(cardId);
+    if (!card) return;
+    const restantes = (card.adjuntos ?? []).filter((a): a is string => typeof a === 'string' && a !== key);
+    const { errors } = await client.models.Card.update({
+      id: cardId,
+      adjuntos: restantes,
+    });
+    if (errors?.length) throw new Error(errors[0].message);
+    try {
+      await remove({ path: key });
+    } catch (e) {
+      console.warn('No se pudo borrar el archivo de S3:', e);
+    }
   }
 
   async listarEvaluacionesDeGrupo(grupoId: string): Promise<EvaluacionPar[]> {
@@ -271,6 +288,7 @@ export class MateriaService {
     grupoId: string,
     titulo: string,
     detalles: {
+      descripcion?: string;
       pesoEsfuerzo: 1 | 3 | 5;
       asignados: string[];
       fechaLimite?: string;
@@ -283,6 +301,7 @@ export class MateriaService {
     const { data, errors } = await client.models.Card.create({
       grupoId,
       titulo,
+      ...(detalles.descripcion ? { descripcion: detalles.descripcion } : {}),
       estado,
       orden,
       pesoEsfuerzo: detalles.pesoEsfuerzo,
@@ -309,6 +328,7 @@ export class MateriaService {
       completadaEn: number | null;
       puntuacion: number;
       comentarioProfesor: string;
+      adjuntos: string[];
     }>,
   ) {
     const { data, errors } = await client.models.Card.update({
@@ -473,5 +493,260 @@ export class MateriaService {
     // Borrar la materia
     const { errors } = await client.models.Materia.delete({ id: materiaId });
     if (errors?.length) throw new Error(errors[0].message);
+  }
+
+  // ==== Solicitudes de acceso a grupo ====
+
+  async solicitarAccesoGrupo(grupoId: string, userId: string): Promise<void> {
+    await this.registrarLog(grupoId, userId, 'solicitar_acceso', 'SolicitudGrupo', userId);
+  }
+
+  async listarSolicitudesPendientesDeGrupo(
+    grupoId: string,
+    integrantesActuales: (string | null | undefined)[] = [],
+  ): Promise<string[]> {
+    const logs = await this.listarLogsDeGrupo(grupoId);
+    const integrantesSet = new Set(integrantesActuales.filter((x): x is string => !!x));
+    // Ordenar cronológicamente ascendente para quedarnos con el último estado por solicitante
+    const ordenados = [...logs].sort((a, b) => (a.timestamp ?? 0) - (b.timestamp ?? 0));
+    const estadoPorUsuario = new Map<string, 'pendiente' | 'resuelta'>();
+
+    for (const log of ordenados) {
+      if (log.entidad !== 'SolicitudGrupo') continue;
+      const solicitanteId = log.entidadId;
+      if (!solicitanteId) continue;
+      if (log.accion === 'solicitar_acceso') {
+        estadoPorUsuario.set(solicitanteId, 'pendiente');
+      } else if (log.accion === 'aprobar_acceso' || log.accion === 'rechazar_acceso') {
+        estadoPorUsuario.set(solicitanteId, 'resuelta');
+      }
+    }
+
+    const pendientes: string[] = [];
+    for (const [uid, estado] of estadoPorUsuario.entries()) {
+      if (estado === 'pendiente' && !integrantesSet.has(uid)) {
+        pendientes.push(uid);
+      }
+    }
+    return pendientes;
+  }
+
+  async resolverSolicitudAcceso(
+    grupoId: string,
+    solicitanteId: string,
+    aprobar: boolean,
+    resueltoPorId: string,
+  ): Promise<void> {
+    if (aprobar) {
+      const grupo = await this.obtenerGrupo(grupoId);
+      if (!grupo) throw new Error('Grupo no encontrado');
+      const actuales = (grupo.integrantes ?? []).filter((x): x is string => !!x);
+      if (!actuales.includes(solicitanteId)) {
+        await this.actualizarGrupo(grupoId, {
+          integrantes: [...actuales, solicitanteId],
+        });
+      }
+      await this.registrarLog(grupoId, resueltoPorId, 'aprobar_acceso', 'SolicitudGrupo', solicitanteId);
+    } else {
+      await this.registrarLog(grupoId, resueltoPorId, 'rechazar_acceso', 'SolicitudGrupo', solicitanteId);
+    }
+  }
+
+  // ==== Gestión de roles en Materia (Promover alumno a profesor) ====
+
+  async promoverAlumnoAProfesor(materiaId: string, alumnoId: string): Promise<Materia> {
+    const materia = await this.obtenerMateria(materiaId);
+    if (!materia) throw new Error('Materia no encontrada');
+
+    const alumnos = (materia.alumnos ?? []).filter((id): id is string => !!id && id !== alumnoId);
+    const profesoresActuales = (materia.profesores ?? []).filter((id): id is string => !!id);
+    const profesores = profesoresActuales.includes(alumnoId)
+      ? profesoresActuales
+      : [...profesoresActuales, alumnoId];
+
+    const { data, errors } = await client.models.Materia.update({
+      id: materiaId,
+      alumnos,
+      profesores,
+    });
+    if (errors?.length) throw new Error(errors[0].message);
+    return data!;
+  }
+
+  async degradarProfesorAAlumno(materiaId: string, profesorId: string): Promise<Materia> {
+    const materia = await this.obtenerMateria(materiaId);
+    if (!materia) throw new Error('Materia no encontrada');
+
+    const profesores = (materia.profesores ?? []).filter((id): id is string => !!id && id !== profesorId);
+    const alumnosActuales = (materia.alumnos ?? []).filter((id): id is string => !!id);
+    const alumnos = alumnosActuales.includes(profesorId)
+      ? alumnosActuales
+      : [...alumnosActuales, profesorId];
+
+    const { data, errors } = await client.models.Materia.update({
+      id: materiaId,
+      alumnos,
+      profesores,
+    });
+    if (errors?.length) throw new Error(errors[0].message);
+    return data!;
+  }
+
+  // ==== Perfiles de usuario (Email / Nombre legible) ====
+
+  private perfilesCache: Record<string, string> = {
+    'b34c1aaa-5011-704e-e9bf-e6f62c2ee306': 'luciano.barbosa30@gmail.com',
+    'b3dc0ada-20e1-70bf-133e-5ce5f6c2d36c': 'luciano_l17@hotmail.com',
+    'd3bcaaea-8091-7090-e940-37cf06abf4c1': 'leandroserapio95@gmail.com',
+    '34181498-4001-7030-bfe0-92e87e7858b3': 'luciano_l17@hotmail.com',
+  };
+
+  async eliminarAlumnoDeMateria(materiaId: string, alumnoId: string): Promise<Materia> {
+    const materia = await this.obtenerMateria(materiaId);
+    if (!materia) throw new Error('Materia no encontrada');
+
+    // Quitar también de cualquier grupo de la materia
+    const grupos = await this.listarGruposDeMateria(materiaId);
+    for (const g of grupos) {
+      if ((g.integrantes ?? []).includes(alumnoId)) {
+        const restantes = (g.integrantes ?? []).filter((id): id is string => !!id && id !== alumnoId);
+        await this.actualizarGrupo(g.id, { integrantes: restantes });
+      }
+    }
+
+    const alumnos = (materia.alumnos ?? []).filter((id): id is string => !!id && id !== alumnoId);
+    const { data, errors } = await client.models.Materia.update({
+      id: materiaId,
+      alumnos,
+    });
+    if (errors?.length) throw new Error(errors[0].message);
+    return data!;
+  }
+
+  async sincronizarPerfilUsuario(userId: string, email: string | null): Promise<void> {
+    if (!userId || !email) return;
+    this.perfilesCache[userId] = email;
+    try {
+      const { data } = await client.models.LogActividad.list({
+        filter: {
+          grupoId: { eq: 'PERFILES_GLOBAL' },
+          usuarioId: { eq: userId },
+        },
+      });
+      const yaExiste = (data ?? []).some((l) => l.entidadId === email);
+      if (!yaExiste) {
+        await client.models.LogActividad.create({
+          grupoId: 'PERFILES_GLOBAL',
+          usuarioId: userId,
+          accion: 'registro_perfil',
+          entidad: 'Usuario',
+          entidadId: email,
+          timestamp: Math.floor(Date.now() / 1000),
+        });
+      }
+    } catch {
+      // No bloquear si falla la sincronización de perfil
+    }
+  }
+
+  async obtenerMapaUsuarios(): Promise<Record<string, string>> {
+    try {
+      const { data } = await client.models.LogActividad.list({
+        filter: { grupoId: { eq: 'PERFILES_GLOBAL' } },
+      });
+      for (const log of data ?? []) {
+        if (log.usuarioId && log.entidadId) {
+          this.perfilesCache[log.usuarioId] = log.entidadId;
+        }
+      }
+    } catch {}
+    return { ...this.perfilesCache };
+  }
+
+  async agregarAlumnoAMateria(materiaId: string, emailOId: string): Promise<Materia> {
+    const limpio = emailOId.trim().toLowerCase();
+    if (!limpio) throw new Error('Ingresá un email o usuario válido');
+
+    const mapa = await this.obtenerMapaUsuarios();
+    // Buscar si ese email ya corresponde a un userId registrado
+    let targetUserId = emailOId.trim();
+    for (const [uid, mail] of Object.entries(mapa)) {
+      if (mail.toLowerCase() === limpio || uid.toLowerCase() === limpio) {
+        targetUserId = uid;
+        break;
+      }
+    }
+
+    const materia = await this.obtenerMateria(materiaId);
+    if (!materia) throw new Error('Aula no encontrada');
+
+    const yaEnAula =
+      materia.creadorId === targetUserId ||
+      (materia.admins ?? []).includes(targetUserId) ||
+      (materia.profesores ?? []).includes(targetUserId) ||
+      (materia.alumnos ?? []).includes(targetUserId);
+
+    if (yaEnAula) {
+      throw new Error('Este usuario ya forma parte del aula');
+    }
+
+    const alumnosActuales = (materia.alumnos ?? []).filter((id): id is string => !!id);
+    const { data, errors } = await client.models.Materia.update({
+      id: materiaId,
+      alumnos: [...alumnosActuales, targetUserId],
+    });
+    if (errors?.length) throw new Error(errors[0].message);
+    return data!;
+  }
+
+  async agregarIntegranteAGrupo(grupoId: string, alumnoId: string): Promise<Grupo> {
+    const grupo = await this.obtenerGrupo(grupoId);
+    if (!grupo) throw new Error('Grupo no encontrado');
+
+    if (grupo.materiaId) {
+      const ocupados = await this.alumnosEnOtroGrupo(grupo.materiaId, [alumnoId], grupoId);
+      if (ocupados.length > 0) {
+        throw new Error('Este alumno ya pertenece a otro grupo en esta aula');
+      }
+    }
+
+    const actuales = (grupo.integrantes ?? []).filter((i): i is string => !!i);
+    if (actuales.includes(alumnoId)) return grupo;
+
+    return await this.actualizarGrupo(grupoId, {
+      integrantes: [...actuales, alumnoId],
+    });
+  }
+
+  async eliminarIntegranteDeGrupo(grupoId: string, alumnoId: string): Promise<Grupo> {
+    const grupo = await this.obtenerGrupo(grupoId);
+    if (!grupo) throw new Error('Grupo no encontrado');
+
+    const restantes = (grupo.integrantes ?? []).filter(
+      (i): i is string => !!i && i !== alumnoId,
+    );
+    return await this.actualizarGrupo(grupoId, {
+      integrantes: restantes,
+    });
+  }
+
+  // ==== Calificación final de grupo y por integrante ====
+
+  async guardarCalificacionGrupo(
+    grupoId: string,
+    docenteId: string,
+    calificacion: {
+      notaFinal: number | null;
+      comentario?: string;
+      notasIntegrantes: Record<string, number>;
+    },
+  ): Promise<void> {
+    await this.registrarLog(
+      grupoId,
+      docenteId,
+      'calificar_grupo',
+      'CalificacionGrupo',
+      JSON.stringify(calificacion),
+    );
   }
 }

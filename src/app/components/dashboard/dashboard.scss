@@ -1,0 +1,192 @@
+.dashboard-docente {
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 16px;
+  padding: 1.6rem 1.75rem;
+  margin-bottom: 2rem;
+  box-shadow: 0 4px 16px -4px rgba(15, 23, 42, 0.05);
+}
+
+.dashboard-header {
+  margin-bottom: 1.35rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+
+  h2 {
+    margin: 0;
+    font-size: 1.25rem;
+    font-weight: 800;
+    color: #0f172a;
+  }
+
+  .subtitulo {
+    font-size: 0.85rem;
+    color: #64748b;
+  }
+}
+
+.kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(175px, 1fr));
+  gap: 1rem;
+  margin-bottom: 1.6rem;
+}
+
+.kpi-card {
+  background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  padding: 1.05rem 1.15rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+
+  &:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 8px 16px -6px rgba(15, 23, 42, 0.08);
+  }
+
+  &.kpi-alerta {
+    background: linear-gradient(180deg, #fff5f5 0%, #fef2f2 100%);
+    border-color: #fecaca;
+
+    .kpi-value {
+      color: #dc2626;
+    }
+  }
+
+  .kpi-label {
+    font-size: 0.72rem;
+    color: #64748b;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  .kpi-value {
+    font-family: var(--font-display);
+    font-size: 1.65rem;
+    font-weight: 800;
+    color: #0f172a;
+    line-height: 1.2;
+  }
+
+  .kpi-foot {
+    font-size: 0.76rem;
+    color: #64748b;
+  }
+}
+
+.comparativa-grupos {
+  border-top: 1px solid #f1f5f9;
+  padding-top: 1.25rem;
+
+  h3 {
+    margin: 0 0 1rem;
+    font-size: 1rem;
+    font-weight: 700;
+    color: #1e293b;
+  }
+}
+
+.grupo-metric-row {
+  padding: 0.9rem 1rem;
+  margin-bottom: 0.65rem;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+
+  &:last-child {
+    margin-bottom: 0;
+  }
+}
+
+.grupo-metric-info {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.grupo-metric-title {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  font-size: 0.95rem;
+  color: #0f172a;
+
+  .meta-integrantes {
+    color: #64748b;
+    font-size: 0.8rem;
+  }
+
+  .badge-vencida {
+    background: #fee2e2;
+    color: #991b1b;
+    border: 1px solid #fecaca;
+    font-size: 0.72rem;
+    font-weight: 700;
+    padding: 0.12rem 0.5rem;
+    border-radius: 999px;
+  }
+}
+
+.grupo-metric-stats {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  font-size: 0.82rem;
+
+  .nota-pill {
+    background: #fef3c7;
+    color: #92400e;
+    border: 1px solid #fde68a;
+    padding: 0.15rem 0.55rem;
+    border-radius: 999px;
+    font-weight: 700;
+  }
+
+  .pct-pill {
+    font-weight: 800;
+    color: #4f46e5;
+    background: #eef2ff;
+    padding: 0.15rem 0.55rem;
+    border-radius: 999px;
+  }
+}
+
+.barra-progreso-bg {
+  width: 100%;
+  height: 9px;
+  background: #e2e8f0;
+  border-radius: 999px;
+  overflow: hidden;
+  margin-bottom: 0.5rem;
+}
+
+.barra-progreso-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #4f46e5 0%, #06b6d4 50%, #10b981 100%);
+  border-radius: 999px;
+  transition: width 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.desglose-estados {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.15rem;
+  font-size: 0.78rem;
+  color: #64748b;
+
+  strong {
+    color: #0f172a;
+    font-weight: 700;
+  }
+}

@@ -26,6 +26,18 @@
           + Nueva tarea
         </button>
 
+        <button
+          *ngIf="esDocente()"
+          class="btn-calificar"
+          (click)="abrirCalificarGrupo()"
+        >
+          🎓 Calificar
+        </button>
+
+        <button class="btn-secundario" (click)="abrirHistorial()">
+          📜 Historial
+        </button>
+
         <ng-container *ngIf="esAdminDelGrupo()">
           <button class="btn-secundario" (click)="abrirGestionarIntegrantes()">
             👥 Integrantes
@@ -33,34 +45,107 @@
           <button class="btn-secundario" (click)="abrirEditarNombre()">
             ✏️ Nombre
           </button>
+          <button
+            *ngIf="puedeEliminarGrupo"
+            class="btn-peligro"
+            (click)="abrirConfirmarEliminarGrupo()"
+          >
+            🗑️ Eliminar grupo
+          </button>
         </ng-container>
       </div>
     </header>
 
+    <!-- SOLICITUDES DE ACCESO PENDIENTES (admin del grupo o docente) -->
+    <section
+      class="solicitudes-banner"
+      *ngIf="(esAdminDelGrupo() || esDocente()) && solicitudesPendientes().length > 0"
+    >
+      <h3>🔔 Solicitudes para unirse al grupo ({{ solicitudesPendientes().length }})</h3>
+      <div class="solicitudes-lista">
+        <div class="solicitud-item" *ngFor="let solId of solicitudesPendientes()">
+          <span class="solicitante-id">{{ nombreUsuario(solId) }}</span>
+          <div class="solicitud-acciones">
+            <button class="btn-aceptar" (click)="responderSolicitud(solId, true)">
+              ✓ Aceptar
+            </button>
+            <button class="btn-rechazar" (click)="responderSolicitud(solId, false)">
+              ✕ Rechazar
+            </button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- BANNER DE CALIFICACIÓN FINAL Y NOTA POR INTEGRANTE -->
+    <section
+      class="banner-calificacion"
+      *ngIf="calificacionGrupo() || esDocente()"
+    >
+      <div class="banner-calif-top">
+        <div class="banner-calif-principal">
+          <div class="nota-final-circulo">
+            <span class="nota-label">Nota final</span>
+            <strong class="nota-valor">
+              {{
+                calificacionGrupo()?.notaFinal !== null && calificacionGrupo()?.notaFinal !== undefined
+                  ? calificacionGrupo()!.notaFinal + '/10'
+                  : '—'
+              }}
+            </strong>
+          </div>
+          <div class="banner-calif-info">
+            <h2>🎓 Calificación del grupo e integrantes</h2>
+            <p class="banner-comentario" *ngIf="calificacionGrupo()?.comentario">
+              “{{ calificacionGrupo()!.comentario }}”
+            </p>
+            <p class="banner-sin-calificar" *ngIf="!calificacionGrupo()">
+              Todavía no se registró la calificación final de este grupo.
+            </p>
+          </div>
+        </div>
+        <button
+          *ngIf="esDocente()"
+          class="btn-primario"
+          (click)="abrirCalificarGrupo()"
+        >
+          {{ calificacionGrupo() ? '✏️ Editar calificación' : '🎓 Calificar grupo e integrantes' }}
+        </button>
+      </div>
+
+      <div class="notas-integrantes-grid" *ngIf="integrantesGrupo().length > 0">
+        <div class="nota-integrante-card" *ngFor="let uid of integrantesGrupo()">
+          <span class="integrante-nombre">
+            {{ uid === userId() ? 'Vos (' + nombreUsuario(uid) + ')' : nombreUsuario(uid) }}
+          </span>
+          <span
+            class="integrante-nota"
+            [class.sin-nota]="calificacionGrupo()?.notasIntegrantes?.[uid] === undefined"
+          >
+            {{
+              calificacionGrupo()?.notasIntegrantes?.[uid] !== undefined
+                ? 'Nota: ' + calificacionGrupo()!.notasIntegrantes[uid] + '/10'
+                : 'Sin nota'
+            }}
+          </span>
+        </div>
+      </div>
+    </section>
+
+    <!-- PARTICIPACIÓN DEL EQUIPO — solo porcentajes -->
     <section class="metricas-aporte" aria-labelledby="titulo-metricas">
       <div class="metricas-cabecera">
-        <div>
-          <h2 id="titulo-metricas">Participación del equipo</h2>
-          <p>Estimación equilibrada a partir de entregas, puntualidad, colaboración y evaluación entre pares.</p>
-        </div>
-        <span class="total-puntos" *ngIf="formulaParticipacion()">Modelo mixto</span>
+        <h2 id="titulo-metricas">Participación del equipo</h2>
       </div>
       <p class="sin-aportes" *ngIf="!formulaParticipacion()">
         Todavía no hay entregas registradas para calcular la participación.
       </p>
-      <p class="metrica-formula" *ngIf="formulaParticipacion() as pesos">
-        Pesos aplicados según los datos disponibles:
-        Esfuerzo {{ pesos.esfuerzo | number:'1.0-0' }}% ·
-        Puntualidad {{ pesos.puntualidad | number:'1.0-0' }}% ·
-        Calidad/colaboración {{ pesos.calidadColaboracion | number:'1.0-0' }}% ·
-        Pares {{ pesos.pares | number:'1.0-0' }}%.
-      </p>
       <div class="aporte-lista" *ngIf="formulaParticipacion()">
         <article class="aporte-integrante" *ngFor="let metricas of metricasParticipacion()">
           <div class="aporte-nombre">
-            <strong>{{ metricas.usuarioId === userId() ? 'Vos' : metricas.usuarioId }}</strong>
-            <span>
-              {{ metricas.participacion === null ? 'Sin datos suficientes' : (metricas.participacion | number:'1.0-1') + '%' }}
+            <strong>{{ metricas.usuarioId === userId() ? 'Vos (' + nombreUsuario(metricas.usuarioId) + ')' : nombreUsuario(metricas.usuarioId) }}</strong>
+            <span class="aporte-pct">
+              {{ metricas.participacion === null ? '—' : (metricas.participacion | number:'1.0-1') + '%' }}
             </span>
           </div>
           <div
@@ -68,27 +153,12 @@
             role="progressbar"
             [attr.aria-valuenow]="metricas.participacion ?? 0"
             [attr.aria-valuemax]="100"
-            aria-label="Porcentaje de puntos de aporte"
+            aria-label="Porcentaje de participación"
           >
             <span [style.width.%]="metricas.participacion ?? 0"></span>
           </div>
-          <p class="aporte-detalle">
-            Esfuerzo {{ metricas.esfuerzo === null ? '—' : (metricas.esfuerzo | number:'1.0-0') + '%' }}
-            · Puntualidad {{ metricas.puntualidad === null ? '—' : (metricas.puntualidad | number:'1.0-0') + '%' }}
-            · Calidad {{ metricas.calidad === null ? '—' : (metricas.calidad | number:'1.0-0') + '%' }}
-            · Revisiones {{ metricas.colaboracion === null ? '—' : (metricas.colaboracion | number:'1.0-0') + '%' }}
-            · Pares {{ metricas.evaluacionPares === null ? '—' : (metricas.evaluacionPares | number:'1.0-0') + '%' }}
-          </p>
-          <p class="evaluaciones-recibidas">
-            Evaluaciones de pares recibidas: {{ metricas.evaluacionesRecibidas }}
-          </p>
         </article>
       </div>
-      <p class="metricas-nota">
-        50% tareas completadas según esfuerzo · 20% puntualidad · 15% calidad y revisiones · 15% pares.
-        Si falta un tipo de dato, los pesos disponibles se redistribuyen para sumar 100%.
-        Es una señal para conversar, no una calificación automática.
-      </p>
     </section>
 
     <!-- KANBAN -->
@@ -105,47 +175,51 @@
           id="backlog"
         >
           <div class="card" *ngFor="let card of backlog()" cdkDrag>
-            <div class="card-body">
+            <div class="card-body" (click)="abrirDetalleCard(card)">
               <p class="card-titulo">{{ card.titulo }}</p>
               <p class="card-desc" *ngIf="card.descripcion">
                 {{ card.descripcion }}
               </p>
               <p class="card-detalles">
                 Esfuerzo {{ card.pesoEsfuerzo ?? 1 }}
-                · {{ card.asignados?.join(', ') || 'Sin asignar' }}
+                · {{ nombresAsignados(card) }}
                 <span *ngIf="card.fechaLimite"> · Límite {{ card.fechaLimite }}</span>
               </p>
-              <div class="adjuntos" *ngIf="card.adjuntos?.length">
-                <button
-                  *ngFor="let key of card.adjuntos"
-                  class="btn-adjunto"
-                  type="button"
-                  (click)="abrirAdjunto(key || '')"
-                >
-                  📎 {{ nombreAdjunto(key || '') }}
-                </button>
+              <p class="alerta-vencimiento vencida" *ngIf="esVencida(card)">⚠️ Vencida</p>
+              <p class="alerta-vencimiento proxima" *ngIf="esProximaAVencer(card)">⏰ Vence pronto</p>
+              <div class="adjuntos-chips" *ngIf="card.adjuntos?.length">
+                <span *ngFor="let key of card.adjuntos" class="chip-adjunto">
+                  {{ iconoAdjunto(key || '') }} {{ nombreAdjunto(key || '') }}
+                </span>
               </div>
-              <p *ngIf="card.puntuacion" class="puntaje">
-                ⭐ {{ card.puntuacion }}/10
+              <div
+                *ngIf="etiquetaSeguimiento(card)"
+                class="badge-seguimiento"
+                [ngClass]="claseSeguimiento(etiquetaSeguimiento(card))"
+              >
+                {{ etiquetaSeguimiento(card) }}
+              </div>
+              <p class="comentario-docente-card" *ngIf="comentarioLimpio(card)">
+                💬 {{ comentarioLimpio(card) }}
               </p>
             </div>
             <div class="card-acciones">
               <input #backlogInput type="file" style="display:none" (change)="subirArchivo(card, $event)" />
-              <button class="btn-mini" type="button" (click)="abrirSelectorArchivo(backlogInput)" title="Adjuntar archivo">
+              <button class="btn-mini" type="button" (click)="$event.stopPropagation(); abrirSelectorArchivo(backlogInput)" title="Adjuntar archivo">
                 📎
               </button>
               <button
                 class="btn-mini"
                 *ngIf="esDocente()"
-                (click)="abrirPuntuar(card)"
-                title="Puntuar"
+                (click)="$event.stopPropagation(); abrirPuntuar(card)"
+                title="Estado de seguimiento"
               >
-                ⭐
+                🏷️
               </button>
-              <button class="btn-mini" (click)="abrirEditarCard(card)" title="Editar">
+              <button class="btn-mini" (click)="$event.stopPropagation(); abrirEditarCard(card)" title="Editar">
                 ✏️
               </button>
-              <button class="btn-mini" (click)="eliminarCard(card)" title="Eliminar">
+              <button class="btn-mini" (click)="$event.stopPropagation(); eliminarCard(card)" title="Eliminar">
                 🗑️
               </button>
             </div>
@@ -165,47 +239,51 @@
           id="progreso"
         >
           <div class="card" *ngFor="let card of progreso()" cdkDrag>
-            <div class="card-body">
+            <div class="card-body" (click)="abrirDetalleCard(card)">
               <p class="card-titulo">{{ card.titulo }}</p>
               <p class="card-desc" *ngIf="card.descripcion">
                 {{ card.descripcion }}
               </p>
               <p class="card-detalles">
                 Esfuerzo {{ card.pesoEsfuerzo ?? 1 }}
-                · {{ card.asignados?.join(', ') || 'Sin asignar' }}
+                · {{ nombresAsignados(card) }}
                 <span *ngIf="card.fechaLimite"> · Límite {{ card.fechaLimite }}</span>
               </p>
-              <div class="adjuntos" *ngIf="card.adjuntos?.length">
-                <button
-                  *ngFor="let key of card.adjuntos"
-                  class="btn-adjunto"
-                  type="button"
-                  (click)="abrirAdjunto(key || '')"
-                >
-                  📎 {{ nombreAdjunto(key || '') }}
-                </button>
+              <p class="alerta-vencimiento vencida" *ngIf="esVencida(card)">⚠️ Vencida</p>
+              <p class="alerta-vencimiento proxima" *ngIf="esProximaAVencer(card)">⏰ Vence pronto</p>
+              <div class="adjuntos-chips" *ngIf="card.adjuntos?.length">
+                <span *ngFor="let key of card.adjuntos" class="chip-adjunto">
+                  {{ iconoAdjunto(key || '') }} {{ nombreAdjunto(key || '') }}
+                </span>
               </div>
-              <p *ngIf="card.puntuacion" class="puntaje">
-                ⭐ {{ card.puntuacion }}/10
+              <div
+                *ngIf="etiquetaSeguimiento(card)"
+                class="badge-seguimiento"
+                [ngClass]="claseSeguimiento(etiquetaSeguimiento(card))"
+              >
+                {{ etiquetaSeguimiento(card) }}
+              </div>
+              <p class="comentario-docente-card" *ngIf="comentarioLimpio(card)">
+                💬 {{ comentarioLimpio(card) }}
               </p>
             </div>
             <div class="card-acciones">
               <input #progresoInput type="file" style="display:none" (change)="subirArchivo(card, $event)" />
-              <button class="btn-mini" type="button" (click)="abrirSelectorArchivo(progresoInput)" title="Adjuntar archivo">
+              <button class="btn-mini" type="button" (click)="$event.stopPropagation(); abrirSelectorArchivo(progresoInput)" title="Adjuntar archivo">
                 📎
               </button>
               <button
                 class="btn-mini"
                 *ngIf="esDocente()"
-                (click)="abrirPuntuar(card)"
-                title="Puntuar"
+                (click)="$event.stopPropagation(); abrirPuntuar(card)"
+                title="Estado de seguimiento"
               >
-                ⭐
+                🏷️
               </button>
-              <button class="btn-mini" (click)="abrirEditarCard(card)" title="Editar">
+              <button class="btn-mini" (click)="$event.stopPropagation(); abrirEditarCard(card)" title="Editar">
                 ✏️
               </button>
-              <button class="btn-mini" (click)="eliminarCard(card)" title="Eliminar">
+              <button class="btn-mini" (click)="$event.stopPropagation(); eliminarCard(card)" title="Eliminar">
                 🗑️
               </button>
             </div>
@@ -225,61 +303,65 @@
           id="revision"
         >
           <div class="card" *ngFor="let card of revision()" cdkDrag>
-            <div class="card-body">
+            <div class="card-body" (click)="abrirDetalleCard(card)">
               <p class="card-titulo">{{ card.titulo }}</p>
               <p class="card-desc" *ngIf="card.descripcion">
                 {{ card.descripcion }}
               </p>
               <p class="card-detalles">
                 Esfuerzo {{ card.pesoEsfuerzo ?? 1 }}
-                · {{ card.asignados?.join(', ') || 'Sin asignar' }}
+                · {{ nombresAsignados(card) }}
                 <span *ngIf="card.fechaLimite"> · Límite {{ card.fechaLimite }}</span>
               </p>
+              <p class="alerta-vencimiento vencida" *ngIf="esVencida(card)">⚠️ Vencida</p>
+              <p class="alerta-vencimiento proxima" *ngIf="esProximaAVencer(card)">⏰ Vence pronto</p>
               <p class="card-detalles" *ngIf="card.revisadaPor">
-                Revisada por {{ card.revisadaPor }}
+                Revisada por {{ nombreUsuario(card.revisadaPor) }}
               </p>
               <p class="card-detalles" *ngIf="!card.revisadaPor">
                 Pendiente de revisión independiente
               </p>
-              <div class="adjuntos" *ngIf="card.adjuntos?.length">
-                <button
-                  *ngFor="let key of card.adjuntos"
-                  class="btn-adjunto"
-                  type="button"
-                  (click)="abrirAdjunto(key || '')"
-                >
-                  📎 {{ nombreAdjunto(key || '') }}
-                </button>
+              <div class="adjuntos-chips" *ngIf="card.adjuntos?.length">
+                <span *ngFor="let key of card.adjuntos" class="chip-adjunto">
+                  {{ iconoAdjunto(key || '') }} {{ nombreAdjunto(key || '') }}
+                </span>
               </div>
-              <p *ngIf="card.puntuacion" class="puntaje">
-                ⭐ {{ card.puntuacion }}/10
+              <div
+                *ngIf="etiquetaSeguimiento(card)"
+                class="badge-seguimiento"
+                [ngClass]="claseSeguimiento(etiquetaSeguimiento(card))"
+              >
+                {{ etiquetaSeguimiento(card) }}
+              </div>
+              <p class="comentario-docente-card" *ngIf="comentarioLimpio(card)">
+                💬 {{ comentarioLimpio(card) }}
               </p>
             </div>
             <div class="card-acciones">
               <input #revisionInput type="file" style="display:none" (change)="subirArchivo(card, $event)" />
-              <button class="btn-mini" type="button" (click)="abrirSelectorArchivo(revisionInput)" title="Adjuntar archivo">
+              <button class="btn-mini" type="button" (click)="$event.stopPropagation(); abrirSelectorArchivo(revisionInput)" title="Adjuntar archivo">
                 📎
               </button>
               <button
                 class="btn-mini"
                 *ngIf="esDocente()"
-                (click)="abrirPuntuar(card)"
-                title="Puntuar"
+                (click)="$event.stopPropagation(); abrirPuntuar(card)"
+                title="Estado de seguimiento"
               >
-                ⭐
+                🏷️
               </button>
               <button
                 class="btn-mini"
                 *ngIf="puedeRevisar(card)"
-                (click)="marcarRevisada(card)"
+                (click)="$event.stopPropagation(); marcarRevisada(card)"
                 title="Registrar revisión de un integrante"
               >
                 🔎
               </button>
-              <button class="btn-mini" (click)="abrirEditarCard(card)" title="Editar">
+              <button class="btn-mini" (click)="$event.stopPropagation(); abrirEditarCard(card)" title="Editar">
                 ✏️
               </button>
-              <button class="btn-mini" (click)="eliminarCard(card)" title="Eliminar">
+              <button class="btn-mini" (click)="$event.stopPropagation(); eliminarCard(card)" title="Eliminar">
                 🗑️
               </button>
             </div>
@@ -299,53 +381,49 @@
           id="hecho"
         >
           <div class="card" *ngFor="let card of hecho()" cdkDrag>
-            <div class="card-body">
+            <div class="card-body" (click)="abrirDetalleCard(card)">
               <p class="card-titulo">{{ card.titulo }}</p>
               <p class="card-desc" *ngIf="card.descripcion">
                 {{ card.descripcion }}
               </p>
               <p class="card-detalles">
                 Esfuerzo {{ card.pesoEsfuerzo ?? 1 }}
-                · {{ card.asignados?.join(', ') || 'Sin asignar' }}
+                · {{ nombresAsignados(card) }}
                 <span *ngIf="card.fechaLimite"> · Límite {{ card.fechaLimite }}</span>
               </p>
-              <div class="adjuntos" *ngIf="card.adjuntos?.length">
-                <button
-                  *ngFor="let key of card.adjuntos"
-                  class="btn-adjunto"
-                  type="button"
-                  (click)="abrirAdjunto(key || '')"
-                >
-                  📎 {{ nombreAdjunto(key || '') }}
-                </button>
+              <p class="alerta-vencimiento vencida" *ngIf="esVencida(card)">⚠️ Vencida</p>
+              <p class="alerta-vencimiento proxima" *ngIf="esProximaAVencer(card)">⏰ Vence pronto</p>
+              <div class="adjuntos-chips" *ngIf="card.adjuntos?.length">
+                <span *ngFor="let key of card.adjuntos" class="chip-adjunto">
+                  {{ iconoAdjunto(key || '') }} {{ nombreAdjunto(key || '') }}
+                </span>
               </div>
-              <p *ngIf="card.puntuacion" class="puntaje">
-                ⭐ {{ card.puntuacion }}/10
+              <div
+                *ngIf="etiquetaSeguimiento(card)"
+                class="badge-seguimiento"
+                [ngClass]="claseSeguimiento(etiquetaSeguimiento(card))"
+              >
+                {{ etiquetaSeguimiento(card) }}
+              </div>
+              <p class="comentario-docente-card" *ngIf="comentarioLimpio(card)">
+                💬 {{ comentarioLimpio(card) }}
               </p>
             </div>
             <div class="card-acciones">
               <input #hechoInput type="file" style="display:none" (change)="subirArchivo(card, $event)" />
-              <button class="btn-mini" type="button" (click)="abrirSelectorArchivo(hechoInput)" title="Adjuntar archivo">
+              <button class="btn-mini" type="button" (click)="$event.stopPropagation(); abrirSelectorArchivo(hechoInput)" title="Adjuntar archivo">
                 📎
               </button>
-              <button
-                class="btn-mini"
-                *ngIf="esDocente()"
-                (click)="abrirPuntuar(card)"
-                title="Puntuar"
-              >
-                ⭐
-              </button>
-              <button class="btn-mini" (click)="abrirEditarCard(card)" title="Editar">
+              <button class="btn-mini" (click)="$event.stopPropagation(); abrirEditarCard(card)" title="Editar">
                 ✏️
               </button>
-              <button class="btn-mini" (click)="eliminarCard(card)" title="Eliminar">
+              <button class="btn-mini" (click)="$event.stopPropagation(); eliminarCard(card)" title="Eliminar">
                 🗑️
               </button>
               <button
                 class="btn-mini"
                 *ngIf="evaluadosPendientes(card).length"
-                (click)="abrirEvaluacion(card)"
+                (click)="$event.stopPropagation(); abrirEvaluacion(card)"
                 title="Evaluar pares para esta tarea"
               >
                 🤝
@@ -372,6 +450,126 @@
   </ng-container>
 </div>
 
+<!-- MODAL DETALLE DE CARD -->
+<div class="modal-backdrop" *ngIf="cardDetalle()" (click)="cerrarDetalleCard()">
+  <div class="modal modal-detalle" (click)="$event.stopPropagation()">
+    <button class="modal-cerrar" (click)="cerrarDetalleCard()">✕</button>
+    <div class="detalle-cabecera">
+      <h3>{{ cardDetalle()!.titulo }}</h3>
+      <span class="detalle-estado badge-{{ cardDetalle()!.estado }}">
+        {{ estadoLabel(cardDetalle()!.estado) }}
+      </span>
+    </div>
+
+    <p class="detalle-desc" *ngIf="cardDetalle()!.descripcion">
+      {{ cardDetalle()!.descripcion }}
+    </p>
+
+    <div class="detalle-meta">
+      <div>
+        <span class="meta-label">Esfuerzo</span>
+        <span>{{ cardDetalle()!.pesoEsfuerzo ?? 1 }} punto{{ (cardDetalle()!.pesoEsfuerzo ?? 1) === 1 ? '' : 's' }}</span>
+      </div>
+      <div>
+        <span class="meta-label">Asignados</span>
+        <span>{{ nombresAsignados(cardDetalle()!) }}</span>
+      </div>
+      <div *ngIf="cardDetalle()!.fechaLimite">
+        <span class="meta-label">Fecha límite</span>
+        <span>{{ cardDetalle()!.fechaLimite }}</span>
+      </div>
+      <div *ngIf="etiquetaSeguimiento(cardDetalle()!)">
+        <span class="meta-label">Estado de seguimiento</span>
+        <span
+          class="badge-seguimiento"
+          [ngClass]="claseSeguimiento(etiquetaSeguimiento(cardDetalle()!))"
+        >
+          {{ etiquetaSeguimiento(cardDetalle()!) }}
+        </span>
+      </div>
+      <div *ngIf="comentarioLimpio(cardDetalle()!)">
+        <span class="meta-label">Comentario del docente</span>
+        <span>{{ comentarioLimpio(cardDetalle()!) }}</span>
+      </div>
+    </div>
+
+    <!-- ADJUNTOS CON VISTA PREVIA -->
+    <div class="detalle-adjuntos" *ngIf="cardDetalle()!.adjuntos?.length">
+      <h4>Adjuntos ({{ cardDetalle()!.adjuntos!.length }})</h4>
+
+      <div *ngIf="cargandoUrlsDetalle()" class="cargando-adjuntos">Cargando adjuntos…</div>
+
+      <div class="adjuntos-grid" *ngIf="!cargandoUrlsDetalle()">
+        <div
+          *ngFor="let key of cardDetalle()!.adjuntos"
+          class="adjunto-item"
+        >
+          <!-- Vista previa imagen -->
+          <ng-container *ngIf="esImagen(key || '') && adjuntosUrls()[key || '']">
+            <img
+              [src]="adjuntosUrls()[key || '']"
+              [alt]="nombreAdjunto(key || '')"
+              class="adjunto-preview-img"
+              (click)="abrirAdjunto(key || '')"
+              title="Click para abrir en tamaño completo"
+            />
+          </ng-container>
+
+          <!-- Placeholder imagen cargando -->
+          <ng-container *ngIf="esImagen(key || '') && !adjuntosUrls()[key || '']">
+            <div class="adjunto-preview-placeholder">🖼️</div>
+          </ng-container>
+
+          <!-- Icono para no-imágenes -->
+          <ng-container *ngIf="!esImagen(key || '')">
+            <div
+              class="adjunto-icono"
+              (click)="abrirAdjunto(key || '')"
+              title="Descargar / abrir"
+            >
+              {{ iconoAdjunto(key || '') }}
+            </div>
+          </ng-container>
+
+          <div class="adjunto-info">
+            <span class="adjunto-nombre" (click)="abrirAdjunto(key || '')" title="Abrir archivo">
+              {{ nombreAdjunto(key || '') }}
+            </span>
+            <button
+              class="btn-mini btn-eliminar-adjunto"
+              (click)="eliminarAdjunto(cardDetalle()!, key || '', $event)"
+              title="Eliminar adjunto"
+            >
+              🗑️
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="detalle-acciones">
+      <input #detalleInput type="file" style="display:none" (change)="subirArchivo(cardDetalle()!, $event)" />
+      <button
+        class="btn-secundario"
+        (click)="abrirSelectorArchivo(detalleInput)"
+        [disabled]="subiendoAdjuntoCardId() === cardDetalle()!.id"
+      >
+        {{ subiendoAdjuntoCardId() === cardDetalle()!.id ? 'Subiendo…' : '📎 Adjuntar archivo' }}
+      </button>
+      <button class="btn-secundario" (click)="abrirEditarCard(cardDetalle()!); cerrarDetalleCard()">
+        ✏️ Editar
+      </button>
+      <button
+        class="btn-secundario"
+        *ngIf="esDocente() && cardDetalle()!.estado !== 'hecho'"
+        (click)="abrirPuntuar(cardDetalle()!); cerrarDetalleCard()"
+      >
+        🏷️ Estado de seguimiento
+      </button>
+    </div>
+  </div>
+</div>
+
 <!-- MODAL CREAR/EDITAR CARD -->
 <div class="modal-backdrop" *ngIf="mostrarModalCard()" (click)="cerrarModalCard()">
   <div class="modal" (click)="$event.stopPropagation()">
@@ -380,42 +578,52 @@
 
     <label>
       Título
-      <input [(ngModel)]="cardTitulo" placeholder="Ej: Investigar fuentes" />
+      <input
+        [(ngModel)]="cardTitulo"
+        (keydown.enter)="guardarCard()"
+        placeholder="Ej: Investigar fuentes"
+      />
     </label>
 
     <label>
       Descripción (opcional)
-      <textarea [(ngModel)]="cardDescripcion"></textarea>
+      <textarea [(ngModel)]="cardDescripcion" rows="2"></textarea>
     </label>
 
-    <label>
-      Esfuerzo
-      <select [(ngModel)]="cardPesoEsfuerzo" [disabled]="cardPlanificacionBloqueada">
-        <option [ngValue]="1">1 · Chico</option>
-        <option [ngValue]="3">3 · Mediano</option>
-        <option [ngValue]="5">5 · Grande</option>
-      </select>
-    </label>
+    <div class="modal-fila-doble">
+      <label>
+        Esfuerzo
+        <select [(ngModel)]="cardPesoEsfuerzo" [disabled]="cardPlanificacionBloqueada">
+          <option [ngValue]="1">1 · Chico</option>
+          <option [ngValue]="3">3 · Mediano</option>
+          <option [ngValue]="5">5 · Grande</option>
+        </select>
+      </label>
 
-    <label>
-      Fecha límite (opcional)
-      <input type="date" [(ngModel)]="cardFechaLimite" [disabled]="cardPlanificacionBloqueada" />
-    </label>
+      <label *ngIf="esDocente()">
+        Fecha límite (exclusivo docente)
+        <input type="date" [(ngModel)]="cardFechaLimite" />
+      </label>
+    </div>
 
     <fieldset class="asignados-selector" [disabled]="cardPlanificacionBloqueada">
       <legend>Asignar a integrantes</legend>
+      <p class="ayuda" *ngIf="integrantesGrupo().length === 0">
+        Este grupo todavía no tiene integrantes. Podés crear la tarea sin asignar
+        y sumar integrantes desde <strong>👥 Integrantes</strong>.
+      </p>
       <label *ngFor="let integranteId of integrantesGrupo()" class="asignado-item">
         <input
           type="checkbox"
           [checked]="asignadosSeleccionados().includes(integranteId)"
           (change)="toggleAsignado(integranteId)"
         />
-        {{ integranteId === userId() ? 'Vos' : integranteId }}
+        {{ integranteId === userId() ? 'Vos (' + nombreUsuario(integranteId) + ')' : nombreUsuario(integranteId) }}
       </label>
     </fieldset>
 
     <p class="ayuda" *ngIf="cardPlanificacionBloqueada">
-      El esfuerzo, la asignación y la fecha límite se congelan al iniciar la tarea para proteger la métrica.
+      El esfuerzo y la asignación se congelan al iniciar la tarea para proteger la métrica.
     </p>
 
     <p class="ayuda" *ngIf="!modoEdicionCard()">
@@ -423,8 +631,13 @@
     </p>
 
     <div class="modal-acciones">
-      <button (click)="cerrarModalCard()">Cancelar</button>
-      <button class="btn-primario" (click)="guardarCard()">
+      <button type="button" (click)="cerrarModalCard()">Cancelar</button>
+      <button
+        type="button"
+        class="btn-primario"
+        [disabled]="guardandoCard()"
+        (click)="guardarCard()"
+      >
         {{ modoEdicionCard() ? 'Guardar' : 'Crear' }}
       </button>
     </div>
@@ -445,7 +658,7 @@
           *ngFor="let integranteId of evaluadosPendientes(tarjetaAEvaluar()!)"
           [value]="integranteId"
         >
-          {{ integranteId }}
+          {{ nombreUsuario(integranteId) }}
         </option>
       </select>
     </label>
@@ -470,27 +683,94 @@
   </div>
 </div>
 
-<!-- MODAL PUNTUAR (profesor) -->
+<!-- MODAL ESTADO DE SEGUIMIENTO DE TAREA (profesor) -->
 <div class="modal-backdrop" *ngIf="mostrarModalPuntuar()" (click)="cerrarPuntuar()">
   <div class="modal" (click)="$event.stopPropagation()">
-    <h3>Puntuar: {{ cardAPuntuar()?.titulo }}</h3>
+    <h3>🏷️ Seguimiento de tarea: {{ cardAPuntuar()?.titulo }}</h3>
+
+    <div class="seguimiento-selector">
+      <span class="seguimiento-label">Estado de avance</span>
+      <div class="opciones-seguimiento">
+        <button
+          type="button"
+          *ngFor="let op of opcionesSeguimiento"
+          class="btn-opcion-seg"
+          [ngClass]="claseSeguimiento(op)"
+          [class.activa]="seguimientoInput === op"
+          (click)="seguimientoInput = op"
+        >
+          {{ op }}
+        </button>
+        <button
+          type="button"
+          class="btn-opcion-seg seg-limpiar"
+          [class.activa]="seguimientoInput === ''"
+          (click)="seguimientoInput = ''"
+        >
+          Sin estado
+        </button>
+      </div>
+    </div>
 
     <label>
-      Puntuación (0 a 10)
-      <input type="number" min="0" max="10" [(ngModel)]="puntuacionInput" />
-    </label>
-
-    <label>
-      Comentario
+      Observación (opcional)
       <textarea
         [(ngModel)]="comentarioInput"
-        placeholder="Observaciones…"
+        placeholder="Observaciones para el equipo…"
       ></textarea>
     </label>
 
     <div class="modal-acciones">
       <button (click)="cerrarPuntuar()">Cancelar</button>
       <button class="btn-primario" (click)="guardarPuntuacion()">Guardar</button>
+    </div>
+  </div>
+</div>
+
+<!-- MODAL CALIFICAR GRUPO E INTEGRANTES (profesor) -->
+<div class="modal-backdrop" *ngIf="mostrarModalCalificarGrupo()" (click)="cerrarCalificarGrupo()">
+  <div class="modal modal-calificar-grupo" (click)="$event.stopPropagation()">
+    <h3>🎓 Calificar grupo: {{ grupo()?.nombre }}</h3>
+
+    <label>
+      Nota final del grupo (0 a 10)
+      <input
+        type="number"
+        min="0"
+        max="10"
+        step="0.5"
+        [(ngModel)]="notaFinalGrupoInput"
+      />
+    </label>
+
+    <div class="calificar-integrantes-box" *ngIf="integrantesGrupo().length > 0">
+      <span class="seguimiento-label">Nota individual por integrante (0 a 10)</span>
+      <div class="calificar-integrante-fila" *ngFor="let uid of integrantesGrupo()">
+        <span class="calif-uid">{{ nombreUsuario(uid) }}</span>
+        <input
+          type="number"
+          min="0"
+          max="10"
+          step="0.5"
+          [ngModel]="notasIntegrantesInput()[uid]"
+          (ngModelChange)="setNotaIntegrante(uid, $event)"
+        />
+      </div>
+    </div>
+
+    <label>
+      Devolución general (opcional)
+      <textarea
+        [(ngModel)]="comentarioGrupoInput"
+        placeholder="Devolución general sobre el trabajo del grupo…"
+      ></textarea>
+    </label>
+
+    <div class="modal-acciones">
+      <button (click)="cerrarCalificarGrupo()">Cancelar</button>
+      <button class="btn-primario" (click)="guardarCalificacionFinalGrupo()">
+        Guardar calificación
+      </button>
     </div>
   </div>
 </div>
@@ -542,29 +822,54 @@
     <!-- Grupo dentro de un aula -->
     <ng-container *ngIf="!esTableroIndependiente">
       <div class="integrantes-lista">
-        <p class="titulo-lista">Compañeros disponibles en esta aula:</p>
-        <p *ngIf="alumnosAgregables().length === 0" class="ayuda">
-          No hay otros compañeros disponibles. O ya están en otros grupos, o
-          todavía no hay más alumnos en el aula.
+        <p class="titulo-lista">Integrantes actuales del grupo ({{ integrantesGrupo().length }}):</p>
+        <p *ngIf="integrantesGrupo().length === 0" class="ayuda">
+          Este grupo no tiene integrantes todavía.
         </p>
-        <label
-          *ngFor="let alumnoId of alumnosAgregables()"
-          class="alumno-item"
-          [class.seleccionado]="estaSeleccionado(alumnoId)"
+        <div
+          class="alumno-item fila-integrante-directa"
+          *ngFor="let miembroId of integrantesGrupo()"
         >
-          <input
-            type="checkbox"
-            [checked]="estaSeleccionado(alumnoId)"
-            (change)="toggleIntegrante(alumnoId)"
-          />
-          <span class="alumno-id">{{ alumnoId }}</span>
-        </label>
+          <span class="alumno-id">
+            {{ miembroId === userId() ? 'Vos (' + nombreUsuario(miembroId) + ')' : nombreUsuario(miembroId) }}
+          </span>
+          <button
+            *ngIf="esDocente()"
+            type="button"
+            class="btn-quitar-mini"
+            (click)="eliminarIntegranteDirecto(miembroId)"
+          >
+            🗑️ Eliminar
+          </button>
+        </div>
+      </div>
+
+      <div class="integrantes-lista">
+        <p class="titulo-lista">Compañeros disponibles en el aula para agregar:</p>
+        <p *ngIf="!esDocente()" class="ayuda">
+          Podés sumar compañeros disponibles. Solo los docentes pueden eliminar integrantes del grupo.
+        </p>
+        <p *ngIf="alumnosDisponiblesParaAgregar().length === 0" class="ayuda">
+          No hay otros alumnos disponibles sin grupo en el aula.
+        </p>
+        <div
+          class="alumno-item fila-integrante-directa"
+          *ngFor="let alumnoId of alumnosDisponiblesParaAgregar()"
+        >
+          <span class="alumno-id">{{ nombreUsuario(alumnoId) }}</span>
+          <button
+            type="button"
+            class="btn-agregar-mini"
+            (click)="agregarIntegranteDirecto(alumnoId)"
+          >
+            + Agregar al grupo
+          </button>
+        </div>
       </div>
 
       <div class="modal-acciones">
-        <button (click)="cerrarGestionarIntegrantes()">Cancelar</button>
-        <button class="btn-primario" (click)="guardarIntegrantes()">
-          Guardar
+        <button class="btn-primario" (click)="cerrarGestionarIntegrantes()">
+          Cerrar
         </button>
       </div>
     </ng-container>
@@ -621,6 +926,55 @@
       <button (click)="cancelarEliminarGrupo()">Cancelar</button>
       <button class="btn-peligro" (click)="eliminarGrupoCompleto()">
         Eliminar
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- MODAL HISTORIAL DE ACTIVIDAD -->
+<div
+  class="modal-backdrop"
+  *ngIf="mostrarModalLogs()"
+  (click)="cerrarHistorial()"
+>
+  <div class="modal modal-historial" (click)="$event.stopPropagation()">
+    <button class="modal-cerrar" (click)="cerrarHistorial()">✕</button>
+    <h3>📜 Historial de actividad del grupo</h3>
+
+    <p *ngIf="logsOrdenados().length === 0" class="ayuda">
+      Todavía no hay actividad registrada en este grupo.
+    </p>
+
+    <div class="historial-lista" *ngIf="logsOrdenados().length > 0">
+      <div class="historial-item" *ngFor="let log of logsOrdenados()">
+        <div class="historial-texto">
+          <strong>{{ log.usuarioId === userId() ? 'Vos' : nombreUsuario(log.usuarioId) }}</strong>
+          {{ describirLog(log) }}
+        </div>
+        <span class="historial-fecha">{{ fechaLog(log) }}</span>
+      </div>
+    </div>
+
+    <div class="modal-acciones">
+      <button class="btn-primario" (click)="cerrarHistorial()">Cerrar</button>
+    </div>
+  </div>
+</div>
+
+
+<!-- MODAL DE CONFIRMACIÓN (reemplaza confirm nativo del navegador) -->
+<div
+  class="modal-backdrop"
+  *ngIf="confirmacionPendiente()"
+  (click)="cerrarConfirmacionPendiente()"
+>
+  <div class="modal" (click)="$event.stopPropagation()">
+    <h3>⚠️ {{ confirmacionPendiente()!.titulo }}</h3>
+    <p>{{ confirmacionPendiente()!.mensaje }}</p>
+    <div class="modal-acciones">
+      <button (click)="cerrarConfirmacionPendiente()">Cancelar</button>
+      <button class="btn-peligro" (click)="confirmarAccionPendiente()">
+        {{ confirmacionPendiente()!.textoBoton }}
       </button>
     </div>
   </div>
