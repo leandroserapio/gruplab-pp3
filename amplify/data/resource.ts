@@ -78,7 +78,9 @@ const schema = a.schema({
       entidadId: a.string().required(),
       timestamp: a.timestamp().required(),
     })
-    .authorization((allow) => [allow.authenticated().to(['read', 'create'])]),
+    // Read-only for clients: entries are written by the registrar-log Lambda
+    // (POST /logs), which takes the author from the verified Cognito token.
+    .authorization((allow) => [allow.authenticated().to(['read'])]),
 });
 
 export type Schema = ClientSchema<typeof schema>;
