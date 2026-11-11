@@ -1,4 +1,6 @@
 import { Injectable } from '@angular/core';
+import { post } from 'aws-amplify/api';
+import { fetchAuthSession } from 'aws-amplify/auth';
 import { generateClient } from 'aws-amplify/data';
 import { getUrl, remove, uploadData } from 'aws-amplify/storage';
 import type { Schema } from '../../../amplify/data/resource';
@@ -8,6 +10,9 @@ type Grupo = Schema['Grupo']['type'];
 type EvaluacionPar = Schema['EvaluacionPar']['type'];
 
 const client = generateClient<Schema>();
+
+/** Nombre del REST API definido en `amplify/backend.ts`. */
+const LOGS_API = 'gruplabApi';
 
 @Injectable({ providedIn: 'root' })
 export class MateriaService {
@@ -346,22 +351,38 @@ export class MateriaService {
 
   // ==== Log de actividad ====
 
+  /**
+   * Registra una acción mediante API Gateway (`POST /logs`).
+   *
+   * `_usuarioId` se conserva por compatibilidad con los llamadores, pero no se
+   * envía: la Lambda toma el autor del token de Cognito y fija el timestamp,
+   * así un cliente no puede registrar actividad a nombre de otro usuario.
+   */
   async registrarLog(
     grupoId: string,
-    usuarioId: string,
+    _usuarioId: string,
     accion: string,
     entidad: string,
     entidadId: string,
   ) {
-    const { errors } = await client.models.LogActividad.create({
-      grupoId,
-      usuarioId,
-      accion,
-      entidad,
-      entidadId,
-      timestamp: Math.floor(Date.now() / 1000),
-    });
-    if (errors?.length) throw new Error(errors[0].message);
+    await this.enviarLog(grupoId, accion, entidad, entidadId);
+  }
+
+  private async enviarLog(grupoId: string, accion: string, entidad: string, entidadId: string) {
+    const { tokens } = await fetchAuthSession();
+    const idToken = tokens?.idToken?.toString();
+    if (!idToken) throw new Error('No hay una sesión activa para registrar la actividad');
+
+    // El autorizador de Cognito del API valida el ID token; con esta cabecera
+    // Amplify no firma la petición con IAM.
+    await post({
+      apiName: LOGS_API,
+      path: 'logs',
+      options: {
+        headers: { Authorization: idToken },
+        body: { grupoId, accion, entidad, entidadId },
+      },
+    }).response;
   }
 
   async listarLogsDeGrupo(grupoId: string) {
@@ -635,14 +656,7 @@ export class MateriaService {
       });
       const yaExiste = (data ?? []).some((l) => l.entidadId === email);
       if (!yaExiste) {
-        await client.models.LogActividad.create({
-          grupoId: 'PERFILES_GLOBAL',
-          usuarioId: userId,
-          accion: 'registro_perfil',
-          entidad: 'Usuario',
-          entidadId: email,
-          timestamp: Math.floor(Date.now() / 1000),
-        });
+        await this.enviarLog('PERFILES_GLOBAL', 'registro_perfil', 'Usuario', email);
       }
     } catch {
       // No bloquear si falla la sincronización de perfil

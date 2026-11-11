@@ -7,6 +7,17 @@ import { translations } from '@aws-amplify/ui-angular';
 import outputs from '../amplify_outputs.json';
 
 Amplify.configure(outputs);
+
+// The REST API from amplify/backend.ts is published under `custom.API`, which
+// Amplify does not register on its own. The section is absent until the backend
+// is deployed with that API, so it is read defensively.
+type RestApis = Record<string, { endpoint: string; region: string }>;
+const restApis = (outputs as typeof outputs & { custom?: { API?: RestApis } }).custom?.API;
+if (restApis) {
+  const config = Amplify.getConfig();
+  Amplify.configure({ ...config, API: { ...config.API, REST: restApis } });
+}
+
 I18n.putVocabularies(translations);
 I18n.setLanguage('es');
 
