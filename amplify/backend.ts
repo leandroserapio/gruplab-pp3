@@ -5,6 +5,7 @@ import {
   Cors,
   CognitoUserPoolsAuthorizer,
   LambdaIntegration,
+  ResponseType,
   RestApi,
 } from 'aws-cdk-lib/aws-apigateway';
 import { auth } from './auth/resource.ts';
@@ -41,6 +42,23 @@ api.root.addResource('logs').addMethod('POST', new LambdaIntegration(fn), {
   authorizationType: AuthorizationType.COGNITO,
   authorizer,
 });
+
+// Errors raised by API Gateway itself (expired token, throttling) never reach
+// the Lambda, so they need their own CORS headers. Without them the browser
+// reports an opaque CORS failure instead of the real 401/429/5xx.
+const gatewayErrors = {
+  Default4xx: ResponseType.DEFAULT_4XX,
+  Default5xx: ResponseType.DEFAULT_5XX,
+};
+for (const [id, type] of Object.entries(gatewayErrors)) {
+  api.addGatewayResponse(id, {
+    type,
+    responseHeaders: {
+      'Access-Control-Allow-Origin': "'*'",
+      'Access-Control-Allow-Headers': "'*'",
+    },
+  });
+}
 
 // Exposes the endpoint in amplify_outputs.json for the frontend.
 backend.addOutput({
